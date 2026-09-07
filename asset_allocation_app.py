@@ -59,13 +59,16 @@ def n(v, default=0.0):
 def clean_records(df):
     df = df.copy()
     for c in ['target_pct', 'shares', 'close']:
-        if c not in df: df[c] = 0.0
+        if c not in df:
+            df[c] = 0.0
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-    if 'prices' not in df: df['prices'] = [[] for _ in range(len(df))]
+    if 'prices' not in df:
+        df['prices'] = [[] for _ in range(len(df))]
     df['prices'] = df['prices'].apply(safe_prices)
-for c in ['strategy', 'ticker', 'name', 'market', 'role', 'signal_ticker', 'category', 'kind']:
-    if c not in df: df[c] = ''
-    df[c] = df[c].fillna('').astype(str)
+    for c in ['strategy', 'ticker', 'name', 'market', 'role', 'signal_ticker', 'category', 'kind']:
+        if c not in df:
+            df[c] = ''
+        df[c] = df[c].fillna('').astype(str)
     df['signal_ticker'] = df.apply(lambda r: r['signal_ticker'] or r['ticker'], axis=1)
     df['market'] = df['market'].apply(lambda m: m if m in ('KR', 'US') else 'KR')
     df['category'] = df['category'].apply(lambda c: c if c in CATEGORY_OPTIONS else '기타')
