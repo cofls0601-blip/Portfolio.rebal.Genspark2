@@ -40,6 +40,13 @@ div[data-baseweb="input"] > div,
 textarea {
     min-height: 2.65rem !important;
 }
+@media (min-width: 641px) {
+    .block-container {
+        max-width: 1180px !important;
+        padding-left: 2.25rem !important;
+        padding-right: 2.25rem !important;
+    }
+}
 @media (max-width: 640px) {
     .block-container {
         padding-left: 0.65rem !important;
@@ -329,7 +336,7 @@ def load_kr_individual_stocks(asof):
                 r = requests.get(secret('DATA_GO_URL', DATA_GO_STOCK_URL_DEFAULT), params={
                     'serviceKey': key, 'resultType': 'json', 'numOfRows': 1000, 'pageNo': page,
                     'basDt': d.strftime('%Y%m%d'),
-                }, timeout=30)
+                }, timeout=8)
                 r.raise_for_status()
                 body = (r.json().get('response') or {}).get('body') or {}
                 items = (body.get('items') or {}).get('item') or []
@@ -370,7 +377,7 @@ def load_krx_universe(asof):
         d = pd.Timestamp(asof); got = False; etf_err = ''
         for _ in range(10):
             try:
-                r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': d.strftime('%Y%m%d')}, timeout=30)
+                r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': d.strftime('%Y%m%d')}, timeout=8)
                 r.raise_for_status()
                 rows = r.json().get('OutBlock_1', [])
                 if rows:
@@ -485,7 +492,7 @@ def fetch_day(source, ticker, day):
             _seen.add(url); krx_tried = True
             try:
                 r = requests.get(url, headers={'AUTH_KEY': key},
-                                 params={'basDd': day.replace('-', '')}, timeout=30)
+                                 params={'basDd': day.replace('-', '')}, timeout=8)
                 r.raise_for_status()
                 df = normalize_payload(r.json(), ticker_norm)
                 if df.empty: continue                         # 휴장일・키 불일치 → 다음 URL
@@ -507,7 +514,7 @@ def fetch_day(source, ticker, day):
         try:
             # 금융위원회 API는 종목코드 검색이 itmsNm(종목명)이 아니라 likeSrtnCd(종목코드 LIKE검색)다.
             r = requests.get(url, params={'serviceKey': key, 'resultType': 'json', 'numOfRows': 10, 'pageNo': 1,
-                                           'basDt': day.replace('-', ''), 'likeSrtnCd': ticker_norm}, timeout=30)
+                                           'basDt': day.replace('-', ''), 'likeSrtnCd': ticker_norm}, timeout=8)
             r.raise_for_status(); df = normalize_payload(r.json(), ticker_norm)
             if df.empty:
                 last_err = RuntimeError(f'{ticker}: 응답 없음(휴장일이거나 API 설정 확인 필요)'); continue
@@ -519,71 +526,99 @@ def fetch_day(source, ticker, day):
             last_err = e
     raise last_err or RuntimeError(f'{ticker}: data.go.kr 조회 실패')
 
-def find_trading_day_price(source, ticker, target_date, max_back=10):
-    """target_date가 휴장일(주말·공휴일)이면 하루씩 앞으로 물러나며 실제 거래일 종가를 찾는다."""
-    d = pd.Timestamp(target_date)
-    for _ in range(max_back):
+def fetch_data_go_range(ticker, start_day, end_day):
+    """공공데이터포털에서 한 종목의 과거 구간을 한 번에 가져온다.
+    날짜별 반복 호출을 피하기 위한 역사 데이터 전용 경로."""
+    key = secret('DATA_GO_SERVICE_KEY')
+    if not key:
+        raise RuntimeError('DATA_GO_SERVICE_KEY 미설정')
+    ticker_norm = kr6(ticker)
+    frames = []
+    for url in (secret('DATA_GO_ETF_URL', DATA_GO_ETF_URL_DEFAULT), secret('DATA_GO_URL', DATA_GO_STOCK_URL_DEFAULT)):
         try:
-            x = fetch_day(source, str(ticker), d.strftime('%Y-%m-%d'))
-            return x.iloc[-1].to_dict()
+            params = {
+                'serviceKey': key, 'resultType': 'json', 'numOfRows': 1000, 'pageNo': 1,
+                'beginBasDt': pd.Timestamp(start_day).strftime('%Y%m%d'),
+                'endBasDt': pd.Timestamp(end_day).strftime('%Y%m%d'),
+                'likeSrtnCd': ticker_norm,
+            }
+            r = requests.get(url, params=params, timeout=8)
+            r.raise_for_status()
+            df = normalize_payload(r.json(), ticker_norm)
+            if not df.empty:
+                hit = df[(df['ticker'] == ticker_norm) & (df['date'] >= params['beginBasDt']) & (df['date'] <= params['endBasDt'])]
+                if not hit.empty:
+                    return hit.drop_duplicates('date').sort_values('date').reset_index(drop=True)
         except Exception:
-            d -= pd.Timedelta(days=1)
+            continue
+    return pd.DataFrame()
+
+
+def find_trading_day_price(source, ticker, target_date, max_back=10):
+    """지정 날짜의 가격만 찾는다. 휴장일이면 다른 날짜를 성공값으로 반환하지 않는다.
+    내부적으로만 API가 날짜 범위를 조금 넓혀 응답하는 경우를 허용한다."""
+    d = pd.Timestamp(target_date)
+    try:
+        x = fetch_day(source, str(ticker), d.strftime('%Y-%m-%d'))
+        if not x.empty:
+            hit = x[x['date'].eq(d.strftime('%Y%m%d'))]
+            if not hit.empty:
+                return hit.iloc[-1].to_dict()
+    except Exception:
+        pass
     return None
 
+
 def _month_end_freq():
-    """pandas 2.2 미만에서는 'ME'가 없어 'M'으로 대체한다(구버전 환경 호환)."""
     try:
         pd.date_range('2020-01-01', periods=2, freq='ME')
         return 'ME'
     except Exception:
         return 'M'
 
+
+def _kr_cached_history(ticker):
+    cached = cache_get_prices(kr6(ticker), 'KR')
+    if cached.empty:
+        return cached
+    cached = cached.drop_duplicates('date').sort_values('date')
+    return cached
+
+
 def fetch_monthly(source, ticker, day):
-    # 월말 날짜가 정확히 휴장일이면(전체 달의 ~30%가 주말) 그 달을 통째로 건너뛰어 prices가
-    # 10개월 미만으로 남고 SMA가 0이 되는 버그가 있었다 — find_trading_day_price로 이미 해결.
-    # 여기서는 "이미 지나간 달"의 데이터는 DB 캐시에서 재사용하고, 아직 진행 중인 이번 달만 새로 조회한다.
-    ticker_norm = kr6(ticker)
-    dates = pd.date_range(end=pd.Timestamp(day), periods=13, freq=_month_end_freq())
-    cur_month = pd.Timestamp(day).strftime('%Y%m')
-    cached = cache_get_prices(ticker_norm, 'KR')
-    cached_by_month = {}
-    if not cached.empty:
-        tmp = cached.copy(); tmp['month'] = tmp['date'].str[:6]
-        cached_by_month = {m: g.sort_values('date').iloc[-1].to_dict() for m, g in tmp.groupby('month')}
-    rows = []; new_rows = []
-    for d in dates:
-        m = d.strftime('%Y%m')
-        if m != cur_month and m in cached_by_month:
-            c = cached_by_month[m]
-            rows.append({'date': c['date'], 'close': c['close']})
-        else:
-            row = find_trading_day_price(source, ticker, d)
-            if row:
-                rows.append({'date': row['date'], 'close': row['close']}); new_rows.append(row)
-    if new_rows: cache_put_prices(ticker_norm, new_rows, market='KR', source=source)
-    return pd.DataFrame(rows)
+    """조회일자 기준 최근 13개월의 월별 마지막 거래일 종가.
+    과거 구간은 공공데이터 범위 조회를 우선해 호출 횟수를 최소화한다."""
+    ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.DateOffset(months=13)
+    hist = fetch_data_go_range(ticker_norm, start, end)
+    if hist.empty:
+        # 범위 API가 막힌 경우에만 월말 날짜별 단건 조회로 최소 fallback
+        dates = pd.date_range(end=end, periods=13, freq=_month_end_freq())
+        rows=[]
+        for d in dates:
+            row = find_trading_day_price(source, ticker_norm, d, max_back=5)
+            if row: rows.append(row)
+        hist = pd.DataFrame(rows)
+    if hist.empty: return hist
+    hist = hist.drop_duplicates('date').sort_values('date')
+    hist = hist[hist['date'] <= end.strftime('%Y%m%d')]
+    hist['month'] = hist['date'].str[:6]
+    out = hist.groupby('month', as_index=False).tail(1)[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
+    if not out.empty: cache_put_prices(ticker_norm, out.to_dict('records'), market='KR', source='data_go_range')
+    return out
+
 
 def fetch_daily_recent(source, ticker, day, days=120):
-    # 이미 캐시된 날짜는 건너뛰고, 캐시에 없는(주로 지난번 조회 이후 새로 생긴) 거래일만 조회한다.
-    # 첫 조회는 예전과 동일하게 느리지만, 두 번째 조회부터는 신규 거래일 수십 개 정도만 불러오면 된다.
-    ticker_norm = kr6(ticker)
-    end = pd.Timestamp(day); all_dates = [end - pd.Timedelta(days=i) for i in range(days, -1, -1)]
-    all_dates = [d for d in all_dates if d.weekday() < 5]
-    cached = cache_get_prices(ticker_norm, 'KR')
-    have_dates = set(cached['date']) if not cached.empty else set()
-    new_rows = []
-    for d in all_dates:
-        if d.strftime('%Y%m%d') in have_dates: continue
-        try:
-            x = fetch_day(source, str(ticker), d.strftime('%Y-%m-%d')); new_rows.append(x.iloc[-1].to_dict())
-        except Exception:
-            pass
-    if new_rows: cache_put_prices(ticker_norm, new_rows, market='KR', source=source)
-    start_str = (end - pd.Timedelta(days=days)).strftime('%Y%m%d'); end_str = end.strftime('%Y%m%d')
-    combined = pd.concat([cached, pd.DataFrame(new_rows)], ignore_index=True) if new_rows else cached
-    if combined.empty: return combined
-    combined = combined.drop_duplicates('date').sort_values('date')
-    return combined[(combined['date'] >= start_str) & (combined['date'] <= end_str)]
+    ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.Timedelta(days=days)
+    a = start.strftime('%Y%m%d'); b = end.strftime('%Y%m%d')
+    cached = _kr_cached_history(ticker_norm)
+    if not cached.empty:
+        cached = cached[(cached['date'] >= a) & (cached['date'] <= b)]
+    if cached.empty or len(cached) < max(20, int(days * 0.45)):
+        hist = fetch_data_go_range(ticker_norm, start, end)
+        if not hist.empty:
+            cache_put_prices(ticker_norm, hist.to_dict('records'), market='KR', source='data_go_range')
+            cached = hist
+    return cached.drop_duplicates('date').sort_values('date') if not cached.empty else pd.DataFrame()
 
 # ---------- Yahoo Finance 가격 어댑터 (미국 상장 종목 + 벤치마크) ----------
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -639,11 +674,18 @@ def fetch_yahoo_daily_recent(symbol, day, days=120, force_refresh=False): return
 
 # ---------- 시장 라우팅 (KR -> KRX/공공데이터, US -> Yahoo) ----------
 def fetch_price_day(market, source, ticker, day, force_refresh=False):
-    return (
-        fetch_yahoo_day(ticker, day, force_refresh=force_refresh)
-        if market == 'US'
-        else fetch_day(source, ticker, day)
-    )
+    if market == 'US':
+        return fetch_yahoo_day(ticker, day, force_refresh=force_refresh)
+    ticker_norm = kr6(ticker); target = pd.Timestamp(day).strftime('%Y%m%d')
+    if not force_refresh:
+        cached = cache_get_prices(ticker_norm, 'KR')
+        if not cached.empty:
+            hit = cached[cached['date'].eq(target)]
+            if not hit.empty:
+                return hit[['ticker','date','close']].tail(1)
+    hit = fetch_day(source, ticker_norm, day)
+    cache_put_prices(ticker_norm, hit.to_dict('records'), market='KR', source=source)
+    return hit
 
 def fetch_price_monthly(market, source, ticker, day, force_refresh=False):
     return (
@@ -1030,15 +1072,18 @@ st.title('자산배분 리밸런싱 도우미'); st.caption('한국/미국 상�
 
 
 def strategy_rebalance_status(plan_group):
-    """전략별 리밸런싱 필요도를 계산한다. 가격 데이터 부족은 별도 경고로 분리한다."""
-    if plan_group.empty:
+    """전략별 리밸런싱 필요도를 계산한다. 구버전/빈 계획표에도 안전하게 동작한다."""
+    if plan_group is None or plan_group.empty:
         return '⚪ 데이터 없음', '계획 데이터가 없습니다.'
+    required = {'매매액(+매수/-매도)', '현재금액', '비고'}
+    missing = required - set(plan_group.columns)
+    if missing:
+        return '⚠️ 데이터 확인', f"계획표에 필요한 열이 없습니다: {', '.join(sorted(missing))}"
     trades = pd.to_numeric(plan_group['매매액(+매수/-매도)'], errors='coerce').fillna(0)
-    active = plan_group[plan_group['티커'] != 'CASH']
-    max_trade = float(trades.abs().max()) if not trades.empty else 0.0
-    total_cur = float(pd.to_numeric(plan_group['현재금액'], errors='coerce').fillna(0).sum())
-    ratio = max_trade / total_cur if total_cur > 0 else 0.0
-    notes = ' '.join(plan_group['비고'].astype(str).tolist())
+    total_cur = pd.to_numeric(plan_group['현재금액'], errors='coerce').fillna(0).sum()
+    max_trade = float(trades.abs().max()) if len(trades) else 0.0
+    ratio = max_trade / float(total_cur) if total_cur > 0 else 0.0
+    notes = ' '.join(plan_group['비고'].fillna('').astype(str).tolist())
     if '데이터부족' in notes or '데이터 없음' in notes:
         return '⚠️ 데이터 확인', '가격/SMA 데이터가 부족합니다.'
     if ratio >= 0.10:
@@ -1046,6 +1091,32 @@ def strategy_rebalance_status(plan_group):
     if ratio >= 0.03:
         return '🟡 점검 권장', f'최대 조정액이 현재 자산의 {ratio:.1%}입니다.'
     return '🟢 정상', '목표비중과의 괴리가 크지 않습니다.'
+
+
+def render_target_weight_bar(current_pct, target_pct, height=22):
+    """목표까지는 초록, 목표 미달분은 파랑, 초과분은 빨강으로 표시하는 비중 막대."""
+    cur = max(0.0, float(current_pct or 0))
+    tgt = max(0.0, float(target_pct or 0))
+    scale = max(100.0, cur, tgt, 1.0)
+    if cur <= tgt:
+        green = cur / scale * 100
+        blue = (tgt - cur) / scale * 100
+        red = 0.0
+    else:
+        green = tgt / scale * 100
+        blue = 0.0
+        red = (cur - tgt) / scale * 100
+    parts = []
+    if green > 0: parts.append(f'<div style="width:{green:.4f}%;background:#6f8f72"></div>')
+    if blue > 0: parts.append(f'<div style="width:{blue:.4f}%;background:#6b8fc4"></div>')
+    if red > 0: parts.append(f'<div style="width:{red:.4f}%;background:#c96b5b"></div>')
+    bar = ''.join(parts) or '<div style="width:100%;background:#e5e0d5"></div>'
+    st.markdown(
+        f'<div style="height:{height}px;display:flex;overflow:hidden;border-radius:6px;background:#eee9df;">{bar}</div>'
+        f'<div style="font-size:.78rem;color:#6b665b;margin-top:4px;">현재 {cur:.1f}% · 목표 {tgt:.1f}% · '
+        f'<span style="color:#6f8f72;font-weight:700">초록=목표 충족</span> · '
+        f'<span style="color:#c96b5b;font-weight:700">빨강=초과</span> · '
+        f'<span style="color:#6b8fc4;font-weight:700">파랑=미달</span></div>', unsafe_allow_html=True)
 
 if page == 'Action Plan':
     info = last_snapshot_info()
@@ -1062,13 +1133,14 @@ if page == 'Action Plan':
     ap_assets = assets[assets['strategy'].isin(active_codes)]
     c1, c2 = st.columns(2)
     run_date = c1.date_input('리밸런싱 기준일', date.today())
-    source = c2.selectbox('국내 종목 가격 소스', ['krx', 'data_go'], index=1, format_func=lambda x: 'KRX Open API' if x == 'krx' else '공공데이터포털')
+    source = 'krx'  # 한국은 KRX 우선 → 공공데이터 자동 폴백. 사용자가 소스를 고를 필요가 없도록 통일.
     # 기준일이 바뀌면 이전 기준일의 조회 결과(실패 목록·트리거 판정)는 무효 → 자동 정리
     if st.session_state.get('last_run_date') != run_date.isoformat():
         st.session_state.pop('failed_tickers', None)
         st.session_state.pop('trigger_dd', None)
         st.session_state.last_run_date = run_date.isoformat()
         st.session_state.pop('run_fx_rate', None)
+        st.session_state.pop('price_fetch_attempted', None)
     # 요약 카드: 활성 전략 총자산 · 마지막 저장 · 이번 달 말까지 남은 일수(월말 리밸런싱 워크플로우용)
     _g, _, _ = compute_portfolio_snapshot(assets, active_only=True)
     _sc1, _sc2, _sc3 = st.columns(3)
@@ -1076,8 +1148,8 @@ if page == 'Action Plan':
     _sc2.metric('마지막 히스토리 저장', info[0] if info else '없음')
     _sc3.metric('이번 달 말까지', f'{calendar.monthrange(date.today().year, date.today().month)[1] - date.today().day}일')
     st.info('종가를 불러온 뒤 저장 버튼을 눌러야 히스토리(모든 전략 구성 스냅샷)가 저장됩니다. 미국 상장 종목은 선택한 조회일자의 Yahoo 종가와 같은 날짜의 USD/KRW 환율로 원화 환산합니다.')
-    if usd_krw_rate_missing(ap_assets, run_date):
-        st.warning('미국 상장 종목을 보유 중인데 환율(USD/KRW)을 가져오지 못했습니다. 해당 종목 평가액이 0으로 계산될 수 있습니다.')
+    if st.session_state.get('price_fetch_attempted') and usd_krw_rate_missing(ap_assets, run_date):
+        st.warning('미국 상장 종목의 선택 조회일자 USD/KRW 환율을 가져오지 못했습니다. 해당 종목 평가액이 0으로 계산될 수 있습니다.')
 
     pc1, pc2 = st.columns(2)
     fetch_mode = pc1.radio('가격 조회 방식', ['빠른 조회(캐시 우선)', '강제 새로고침(캐시 무시)'], horizontal=False)
@@ -1085,6 +1157,7 @@ if page == 'Action Plan':
     fetch_clicked = pc2.button('🔄 가격 조회 실행', type='primary', use_container_width=True)
 
     if fetch_clicked:
+        st.session_state.price_fetch_attempted = True
         ok = 0; errors = []; failed = []
         run_fx_rate = None
         if (ap_assets['market'] == 'US').any():
@@ -1495,13 +1568,12 @@ elif page == '포트폴리오 대시보드':
                     st.caption(f"{r['ETF']} — {w(r['현재금액'])} (목표 {r['목표비중']:.1f}%)")
                     st.progress(min(1.0, max(0.0, r['현재비중'] / 100)), text=f"{r['현재비중']:.1f}%")
             else:
-                show = g[['ETF', '현재금액', '현재비중', '목표비중']].copy()
-                show['현재금액'] = show['현재금액'].map(num0)
-                st.dataframe(show, use_container_width=True, hide_index=True, column_config={
-                    '현재금액': st.column_config.TextColumn('현재금액(원)'),
-                    '현재비중': st.column_config.ProgressColumn('현재비중', format='%.1f%%', min_value=0, max_value=100),
-                    '목표비중': st.column_config.NumberColumn('목표비중(%)', format='%.1f%%'),
-                })
+                for _, r in g.iterrows():
+                    dc1, dc2 = st.columns([1.0, 3.2])
+                    with dc1:
+                        st.markdown(f"**{r['ETF']}**<br>{w(r['현재금액'])}", unsafe_allow_html=True)
+                    with dc2:
+                        render_target_weight_bar(r['현재비중'], r['목표비중'])
         st.divider(); st.markdown('#### 전략별 비중 (전체 자산 대비)')
         by_strategy = snap_df.groupby('전략')['현재금액'].sum()
         if grand_total > 0: st.bar_chart((by_strategy / grand_total * 100).rename('비중(%)'))
