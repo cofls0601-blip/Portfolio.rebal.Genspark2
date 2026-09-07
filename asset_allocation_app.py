@@ -105,6 +105,9 @@ DB_PATH = secret('SQLITE_PATH', _default_db_path)
 
 CATEGORY_OPTIONS = ['현금', '금', '선진국 주식', '신흥국 주식', '선진국 채권', '신흥국 채권', '기타']
 YAHOO_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+APP_VERSION = '7.0'
+KR_API_TIMEOUT = 6
+YAHOO_API_TIMEOUT = 10
 
 # ---------- Safe data normalization ----------
 def safe_prices(value, fallback=None):
@@ -336,7 +339,7 @@ def load_kr_individual_stocks(asof):
                 r = requests.get(secret('DATA_GO_URL', DATA_GO_STOCK_URL_DEFAULT), params={
                     'serviceKey': key, 'resultType': 'json', 'numOfRows': 1000, 'pageNo': page,
                     'basDt': d.strftime('%Y%m%d'),
-                }, timeout=8)
+                }, timeout=KR_API_TIMEOUT)
                 r.raise_for_status()
                 body = (r.json().get('response') or {}).get('body') or {}
                 items = (body.get('items') or {}).get('item') or []
@@ -377,7 +380,7 @@ def load_krx_universe(asof):
         d = pd.Timestamp(asof); got = False; etf_err = ''
         for _ in range(10):
             try:
-                r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': d.strftime('%Y%m%d')}, timeout=8)
+                r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': d.strftime('%Y%m%d')}, timeout=KR_API_TIMEOUT)
                 r.raise_for_status()
                 rows = r.json().get('OutBlock_1', [])
                 if rows:
@@ -492,7 +495,7 @@ def fetch_day(source, ticker, day):
             _seen.add(url); krx_tried = True
             try:
                 r = requests.get(url, headers={'AUTH_KEY': key},
-                                 params={'basDd': day.replace('-', '')}, timeout=8)
+                                 params={'basDd': day.replace('-', '')}, timeout=KR_API_TIMEOUT)
                 r.raise_for_status()
                 df = normalize_payload(r.json(), ticker_norm)
                 if df.empty: continue                         # 휴장일・키 불일치 → 다음 URL
@@ -514,7 +517,7 @@ def fetch_day(source, ticker, day):
         try:
             # 금융위원회 API는 종목코드 검색이 itmsNm(종목명)이 아니라 likeSrtnCd(종목코드 LIKE검색)다.
             r = requests.get(url, params={'serviceKey': key, 'resultType': 'json', 'numOfRows': 10, 'pageNo': 1,
-                                           'basDt': day.replace('-', ''), 'likeSrtnCd': ticker_norm}, timeout=8)
+                                           'basDt': day.replace('-', ''), 'likeSrtnCd': ticker_norm}, timeout=KR_API_TIMEOUT)
             r.raise_for_status(); df = normalize_payload(r.json(), ticker_norm)
             if df.empty:
                 last_err = RuntimeError(f'{ticker}: 응답 없음(휴장일이거나 API 설정 확인 필요)'); continue
@@ -542,7 +545,7 @@ def fetch_data_go_range(ticker, start_day, end_day):
                 'endBasDt': pd.Timestamp(end_day).strftime('%Y%m%d'),
                 'likeSrtnCd': ticker_norm,
             }
-            r = requests.get(url, params=params, timeout=8)
+            r = requests.get(url, params=params, timeout=KR_API_TIMEOUT)
             r.raise_for_status()
             df = normalize_payload(r.json(), ticker_norm)
             if not df.empty:
@@ -585,10 +588,19 @@ def _kr_cached_history(ticker):
     return cached
 
 
-def fetch_monthly(source, ticker, day):
+def fetch_monthly(source, ticker, day, force_refresh=False):
     """조회일자 기준 최근 13개월의 월별 마지막 거래일 종가.
-    과거 구간은 공공데이터 범위 조회를 우선해 호출 횟수를 최소화한다."""
+    캐시에 충분한 과거 데이터가 있으면 네트워크를 호출하지 않는다.
+    부족할 때만 공공데이터 범위 조회 → 최소 단건 fallback 순으로 시도한다."""
     ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.DateOffset(months=13)
+    a = start.strftime('%Y%m%d'); b = end.strftime('%Y%m%d')
+    cached = _kr_cached_history(ticker_norm)
+    cached = cached[(cached['date'] >= a) & (cached['date'] <= b)] if not cached.empty else cached
+    if not force_refresh and not cached.empty:
+        cx = cached.copy(); cx['date_dt'] = pd.to_datetime(cx['date'], format='%Y%m%d', errors='coerce'); cx = cx.dropna(subset=['date_dt'])
+        if cx['date_dt'].dt.to_period('M').nunique() >= 10:
+            cx['month'] = cx['date_dt'].dt.to_period('M')
+            return cx.groupby('month', as_index=False).tail(1)[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
     hist = fetch_data_go_range(ticker_norm, start, end)
     if hist.empty:
         # 범위 API가 막힌 경우에만 월말 날짜별 단건 조회로 최소 fallback
@@ -607,13 +619,13 @@ def fetch_monthly(source, ticker, day):
     return out
 
 
-def fetch_daily_recent(source, ticker, day, days=120):
+def fetch_daily_recent(source, ticker, day, days=120, force_refresh=False):
     ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.Timedelta(days=days)
     a = start.strftime('%Y%m%d'); b = end.strftime('%Y%m%d')
     cached = _kr_cached_history(ticker_norm)
     if not cached.empty:
         cached = cached[(cached['date'] >= a) & (cached['date'] <= b)]
-    if cached.empty or len(cached) < max(20, int(days * 0.45)):
+    if force_refresh or cached.empty or len(cached) < max(20, int(days * 0.45)):
         hist = fetch_data_go_range(ticker_norm, start, end)
         if not hist.empty:
             cache_put_prices(ticker_norm, hist.to_dict('records'), market='KR', source='data_go_range')
@@ -624,9 +636,9 @@ def fetch_daily_recent(source, ticker, day, days=120):
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_yahoo_range(symbol, period1, period2, interval='1d', refresh_key=0):
     url=f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}'; last_err=None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            r=requests.get(url,params={'period1':int(period1),'period2':int(period2),'interval':interval,'events':'history','includeAdjustedClose':'true'},headers=YAHOO_HEADERS,timeout=20); r.raise_for_status()
+            r=requests.get(url,params={'period1':int(period1),'period2':int(period2),'interval':interval,'events':'history','includeAdjustedClose':'true'},headers=YAHOO_HEADERS,timeout=YAHOO_API_TIMEOUT); r.raise_for_status()
             result=(r.json().get('chart') or {}).get('result')
             if not result: raise RuntimeError(f'{symbol}: 야후 응답 없음')
             result=result[0]; ts=result.get('timestamp') or []; closes=(((result.get('indicators') or {}).get('quote') or [{}])[0]).get('close') or []; rows=[]
@@ -639,8 +651,8 @@ def fetch_yahoo_range(symbol, period1, period2, interval='1d', refresh_key=0):
             return pd.DataFrame(rows)
         except Exception as e:
             last_err=e
-            if attempt<2:
-                import time; time.sleep(0.8*(attempt+1))
+            if attempt<1:
+                import time; time.sleep(0.5)
     raise last_err or RuntimeError(f'{symbol}: Yahoo 조회 실패')
 
 def _refresh_key(force_refresh=False): return int(pd.Timestamp.now().timestamp()) if force_refresh else 0
@@ -691,14 +703,14 @@ def fetch_price_monthly(market, source, ticker, day, force_refresh=False):
     return (
         fetch_yahoo_monthly(ticker, day, force_refresh=force_refresh)
         if market == 'US'
-        else fetch_monthly(source, ticker, day)
+        else fetch_monthly(source, ticker, day, force_refresh=force_refresh)
     )
 
 def fetch_price_daily_recent(market, source, ticker, day, days=120, force_refresh=False):
     return (
         fetch_yahoo_daily_recent(ticker, day, days, force_refresh=force_refresh)
         if market == 'US'
-        else fetch_daily_recent(source, ticker, day, days)
+        else fetch_daily_recent(source, ticker, day, days, force_refresh=force_refresh)
     )
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1068,7 +1080,7 @@ def mobile_card(title, lines, tone=None):
         unsafe_allow_html=True,
     )
 
-st.title('자산배분 리밸런싱 도우미'); st.caption('한국/미국 상장 종목 · 10개월 SMA · 12개월 모멘텀 · CAGR/MDD/IRR')
+st.title('자산배분 리밸런싱 도우미'); st.caption(f'한국/미국 상장 종목 · 10개월 SMA · 12개월 모멘텀 · CAGR/MDD/IRR · v{APP_VERSION}')
 
 
 def strategy_rebalance_status(plan_group):
@@ -1080,7 +1092,10 @@ def strategy_rebalance_status(plan_group):
     if missing:
         return '⚠️ 데이터 확인', f"계획표에 필요한 열이 없습니다: {', '.join(sorted(missing))}"
     trades = pd.to_numeric(plan_group['매매액(+매수/-매도)'], errors='coerce').fillna(0)
-    total_cur = pd.to_numeric(plan_group['현재금액'], errors='coerce').fillna(0).sum()
+    current = pd.to_numeric(plan_group['현재금액'], errors='coerce').fillna(0)
+    if not trades.notna().any() or not current.notna().any():
+        return '⚠️ 데이터 확인', '계획 금액을 계산할 수 없습니다.'
+    total_cur = float(current.sum())
     max_trade = float(trades.abs().max()) if len(trades) else 0.0
     ratio = max_trade / float(total_cur) if total_cur > 0 else 0.0
     notes = ' '.join(plan_group['비고'].fillna('').astype(str).tolist())
@@ -1170,6 +1185,7 @@ if page == 'Action Plan':
         for _n, (i, a) in enumerate(_todo, 1):
             t = str(a['ticker']).strip()
             mkt = a['market'] or 'KR'
+            _prog.progress(min(1.0, (_n - 1) / max(1, len(_todo))), text=f'가격 조회 중... ({_n}/{len(_todo)}) · {t}')
             try:
                 daydf = fetch_price_day(mkt, source, t, run_date.isoformat(), force_refresh=force_refresh_prices); row = daydf.iloc[-1]; assets.at[i, 'close'] = row['close']
                 hist = fetch_price_monthly(mkt, source, t, run_date.isoformat(), force_refresh=force_refresh_prices)
@@ -1989,23 +2005,46 @@ elif page == '리밸런싱 히스토리':
         if auto_files:
             st.caption(f'매달 스냅샷 저장 시 자동으로도 백업됩니다 (최근 {len(auto_files)}개 보관 중, 최신: {auto_files[-1].name}). 이 파일은 앱이 로컬에서 계속 실행되는 동안만 남아있습니다.')
     with bc2:
-        up = st.file_uploader('JSON 백업 파일로 복원', type=['json'], key='restore_upload')
-        if up is not None:
+        st.markdown('**JSON 백업 복원**')
+        st.caption('파일 선택이 브라우저에서 오류가 날 경우 아래의 JSON 직접 붙여넣기를 사용해도 됩니다.')
+        restore_mode = st.radio('복원 방식', ['JSON 직접 붙여넣기', '파일 선택'], horizontal=True, key='restore_mode')
+        restore_text = ''
+        if restore_mode == '파일 선택':
+            up = st.file_uploader('JSON 백업 파일 선택', type=['json'], key='restore_upload', help='Streamlit 파일 선택기가 정상적으로 로드되는 경우 사용합니다.')
+            if up is not None:
+                try:
+                    restore_text = up.getvalue().decode('utf-8-sig')
+                except Exception as e:
+                    st.error(f'파일을 읽지 못했습니다: {e}')
+        else:
+            restore_text = st.text_area('JSON 내용 붙여넣기', height=180, key='restore_json_text', placeholder='{\n  "assets": [...],\n  "strategies": [...]\n}')
+
+        if restore_text.strip():
             st.warning('복원하면 현재 저장된 데이터를 덮어씁니다.')
             if st.button('이 백업으로 복원', type='primary', key='restore_btn'):
                 try:
-                    data = json.loads(up.getvalue().decode('utf-8'))
+                    data = json.loads(restore_text.lstrip('\ufeff'))
+                    if not isinstance(data, dict):
+                        raise ValueError('JSON 최상위 구조가 객체(dict)가 아닙니다.')
                     restored, skipped = [], []
                     for k in ALL_KV_KEYS:
                         if k in data:
-                            put_state(k, data[k]); restored.append(k)
+                            value = data[k]
+                            if k in ('assets','history','equity','cashflows','benchmarks','strategies','category_targets','executions') and not isinstance(value, (list, dict)):
+                                raise ValueError(f'{k} 항목의 형식이 올바르지 않습니다.')
+                            put_state(k, value); restored.append(k)
                         else:
                             skipped.append(k)
                     st.session_state.pop('assets', None)
-                    a_count = len(data.get('assets', [])); s_count = len(data.get('strategies', [])); h_count = len(data.get('history', []))
-                    st.success(f'복원했습니다 — 전략 {s_count}개, 종목 {a_count}개, 히스토리 {h_count}건.'); toast('백업에서 복원했습니다.')
+                    a_count = len(data.get('assets', [])) if isinstance(data.get('assets', []), list) else 0
+                    s_count = len(data.get('strategies', [])) if isinstance(data.get('strategies', []), list) else 0
+                    h_count = len(data.get('history', [])) if isinstance(data.get('history', []), list) else 0
+                    st.success(f'복원했습니다 — 전략 {s_count}개, 종목 {a_count}개, 히스토리 {h_count}건.')
+                    toast('백업에서 복원했습니다.')
                     if skipped: st.caption(f'백업 파일에 없어 건너뛴 항목: {", ".join(skipped)} (이전 버전 백업이면 정상입니다)')
                     st.rerun()
+                except json.JSONDecodeError as e:
+                    st.error(f'JSON 형식이 올바르지 않습니다: {e}')
                 except Exception as e:
                     st.error(f'복원 실패: {e}')
 
