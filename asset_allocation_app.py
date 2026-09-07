@@ -211,7 +211,7 @@ def default_assets():
 # 이후 로직을 아무리 고쳐도 캐시가 "성공"으로 잘못 응답하며 그 나쁜 값을 계속 돌려주기 때문에
 # 사용자가 매번 수동으로 캐시를 지워야 했다. 이제는 코드 쪽에서 캐시가 이 버전으로 만들어진 게
 # 맞는지 확인하고, 아니면 알아서 지운다.
-PRICE_CACHE_SCHEMA_VERSION = '4'
+PRICE_CACHE_SCHEMA_VERSION = '5'  # v8: cache DataFrame ticker 보장 + 가격 조회 보강
 
 def init_db():
     con = sqlite3.connect(DB_PATH); con.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v TEXT NOT NULL)')
@@ -256,12 +256,22 @@ def _cache_market_ticker(market, ticker):
     return market, (kr6(ticker) if market == 'KR' else ticker.upper())
 
 def cache_get_prices(ticker, market='KR'):
+    """가격 캐시를 항상 ticker/date/close 3개 컬럼으로 반환한다.
+    v7은 SQL에서 date, close만 읽은 뒤 월별/일별 로직에서 ticker 컬럼을 선택해
+    KeyError("['ticker'] not in index")가 발생했다.
+    """
     market, ticker_norm = _cache_market_ticker(market, ticker); init_db(); con=sqlite3.connect(DB_PATH)
-    try: df=pd.read_sql_query('SELECT date, close FROM price_cache WHERE market=? AND ticker=? ORDER BY date',con,params=(market,ticker_norm))
-    finally: con.close()
-    if not df.empty:
-        df['date']=df['date'].astype(str).str.replace('-','',regex=False); df['close']=pd.to_numeric(df['close'],errors='coerce'); df=df.dropna(subset=['date','close']); df=df[df['close']>0]
-    return df
+    try:
+        df=pd.read_sql_query('SELECT ticker, date, close FROM price_cache WHERE market=? AND ticker=? ORDER BY date',con,params=(market,ticker_norm))
+    finally:
+        con.close()
+    if df.empty:
+        return pd.DataFrame(columns=['ticker','date','close'])
+    df['ticker']=df['ticker'].astype(str)
+    df['date']=df['date'].astype(str).str.replace('-','',regex=False)
+    df['close']=pd.to_numeric(df['close'],errors='coerce')
+    df=df.dropna(subset=['date','close']); df=df[df['close']>0]
+    return df[['ticker','date','close']].reset_index(drop=True)
 
 def cache_put_prices(ticker, rows, market='KR', source=''):
     market,ticker_norm=_cache_market_ticker(market,ticker)
@@ -572,6 +582,22 @@ def find_trading_day_price(source, ticker, target_date, max_back=10):
     return None
 
 
+def find_month_last_trading_price(source, ticker, month_end, max_back=10):
+    """SMA용 과거 월 데이터 전용: 월말이 휴장일이면 같은 달 안에서 직전 거래일을 찾는다.
+    선택한 리밸런싱 기준일의 종가에는 절대 사용하지 않는다.
+    """
+    d = pd.Timestamp(month_end)
+    month = d.month
+    for back in range(max_back + 1):
+        cand = d - pd.Timedelta(days=back)
+        if cand.month != month:
+            break
+        row = find_trading_day_price(source, ticker, cand)
+        if row:
+            return row
+    return None
+
+
 def _month_end_freq():
     try:
         pd.date_range('2020-01-01', periods=2, freq='ME')
@@ -600,21 +626,21 @@ def fetch_monthly(source, ticker, day, force_refresh=False):
         cx = cached.copy(); cx['date_dt'] = pd.to_datetime(cx['date'], format='%Y%m%d', errors='coerce'); cx = cx.dropna(subset=['date_dt'])
         if cx['date_dt'].dt.to_period('M').nunique() >= 10:
             cx['month'] = cx['date_dt'].dt.to_period('M')
-            return cx.groupby('month', as_index=False).tail(1)[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
+            out = cx.groupby('month', as_index=False).tail(1).copy(); out['ticker'] = ticker_norm; return out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
     hist = fetch_data_go_range(ticker_norm, start, end)
     if hist.empty:
         # 범위 API가 막힌 경우에만 월말 날짜별 단건 조회로 최소 fallback
         dates = pd.date_range(end=end, periods=13, freq=_month_end_freq())
         rows=[]
         for d in dates:
-            row = find_trading_day_price(source, ticker_norm, d, max_back=5)
+            row = find_month_last_trading_price(source, ticker_norm, d, max_back=10)
             if row: rows.append(row)
         hist = pd.DataFrame(rows)
     if hist.empty: return hist
     hist = hist.drop_duplicates('date').sort_values('date')
     hist = hist[hist['date'] <= end.strftime('%Y%m%d')]
     hist['month'] = hist['date'].str[:6]
-    out = hist.groupby('month', as_index=False).tail(1)[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
+    out = hist.groupby('month', as_index=False).tail(1).copy(); out['ticker'] = ticker_norm; out = out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
     if not out.empty: cache_put_prices(ticker_norm, out.to_dict('records'), market='KR', source='data_go_range')
     return out
 
@@ -635,12 +661,18 @@ def fetch_daily_recent(source, ticker, day, days=120, force_refresh=False):
 # ---------- Yahoo Finance 가격 어댑터 (미국 상장 종목 + 벤치마크) ----------
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_yahoo_range(symbol, period1, period2, interval='1d', refresh_key=0):
-    url=f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}'; last_err=None
-    for attempt in range(2):
+    """Yahoo chart API. query1 장애/차단 시 query2로 자동 재시도한다."""
+    last_err=None
+    params={'period1':int(period1),'period2':int(period2),'interval':interval,'events':'history','includeAdjustedClose':'true'}
+    for host in ('query1.finance.yahoo.com', 'query2.finance.yahoo.com'):
+        url=f'https://{host}/v8/finance/chart/{symbol}'
         try:
-            r=requests.get(url,params={'period1':int(period1),'period2':int(period2),'interval':interval,'events':'history','includeAdjustedClose':'true'},headers=YAHOO_HEADERS,timeout=YAHOO_API_TIMEOUT); r.raise_for_status()
-            result=(r.json().get('chart') or {}).get('result')
-            if not result: raise RuntimeError(f'{symbol}: 야후 응답 없음')
+            r=requests.get(url,params=params,headers=YAHOO_HEADERS,timeout=YAHOO_API_TIMEOUT); r.raise_for_status()
+            chart=r.json().get('chart') or {}
+            result=chart.get('result')
+            if not result:
+                err=(chart.get('error') or {}).get('description') or '야후 응답 없음'
+                raise RuntimeError(f'{symbol}: {err}')
             result=result[0]; ts=result.get('timestamp') or []; closes=(((result.get('indicators') or {}).get('quote') or [{}])[0]).get('close') or []; rows=[]
             for t,c in zip(ts,closes):
                 if c is None: continue
@@ -648,11 +680,10 @@ def fetch_yahoo_range(symbol, period1, period2, interval='1d', refresh_key=0):
                 except (TypeError,ValueError): continue
                 if close>0: rows.append({'ticker':symbol,'date':pd.Timestamp(t,unit='s').strftime('%Y%m%d'),'close':close})
             if not rows: raise RuntimeError(f'{symbol}: 유효한 종가가 없습니다.')
-            return pd.DataFrame(rows)
+            return pd.DataFrame(rows).drop_duplicates('date').sort_values('date').reset_index(drop=True)
         except Exception as e:
             last_err=e
-            if attempt<1:
-                import time; time.sleep(0.5)
+            continue
     raise last_err or RuntimeError(f'{symbol}: Yahoo 조회 실패')
 
 def _refresh_key(force_refresh=False): return int(pd.Timestamp.now().timestamp()) if force_refresh else 0
@@ -680,7 +711,7 @@ def fetch_yahoo_monthly(symbol, day, force_refresh=False):
     daily=fetch_yahoo_daily_history(symbol,day,430,force_refresh)
     if daily.empty: return daily
     x=daily.copy(); x['date_dt']=pd.to_datetime(x['date'],format='%Y%m%d',errors='coerce'); x=x.dropna(subset=['date_dt']).sort_values('date_dt'); x['month']=x['date_dt'].dt.to_period('M')
-    return x.groupby('month',as_index=False).tail(1)[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
+    out=x.groupby('month',as_index=False).tail(1).copy(); out['ticker']=str(symbol); return out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
 
 def fetch_yahoo_daily_recent(symbol, day, days=120, force_refresh=False): return fetch_yahoo_daily_history(symbol,day,days,force_refresh)
 
@@ -879,9 +910,31 @@ def compute_category_breakdown(assets_df, active_only=True):
 # 백업/복원에 포함해야 하는 모든 kv 키. 새 상태를 추가할 때마다 여기 한 곳만 늘리면
 # 백업 JSON이 저절로 최신 스키마를 따라가서, "백업엔 있는데 복원엔 빠졌다" 같은 실수를 막는다.
 ALL_KV_KEYS = ['assets', 'history', 'equity', 'cashflows', 'benchmarks', 'strategies', 'category_targets', 'executions']
+BACKUP_SCHEMA_VERSION = 2
+PRICE_FIELDS_EXCLUDED_FROM_BACKUP = {'close', 'prices'}
+
+def strip_asset_price_data(records):
+    """JSON 백업/복원에서는 일자별 시장가격을 완전히 분리한다.
+    보유수량·전략·종목 구성·목표비중 등 포트폴리오 설정은 그대로 보존한다.
+    """
+    if not isinstance(records, list):
+        return records
+    clean=[]
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        clean.append({k:v for k,v in row.items() if k not in PRICE_FIELDS_EXCLUDED_FROM_BACKUP})
+    return clean
 
 def export_backup_dict():
-    return {k: get_state(k) for k in ALL_KV_KEYS}
+    data = {k: get_state(k) for k in ALL_KV_KEYS}
+    data['assets'] = strip_asset_price_data(data.get('assets', []))
+    data['_backup_meta'] = {
+        'schema_version': BACKUP_SCHEMA_VERSION,
+        'asset_price_data_included': False,
+        'excluded_asset_fields': sorted(PRICE_FIELDS_EXCLUDED_FROM_BACKUP),
+    }
+    return data
 
 def write_auto_backup():
     """로컬 실행 중 DB 파일이 손상되거나 실수로 초기화됐을 때를 대비한 보조 안전망.
@@ -1997,6 +2050,7 @@ elif page == '리밸런싱 히스토리':
     st.info('⚠️ **app.py를 업데이트(코드 교체·재배포)하기 전에는 항상 먼저 "JSON 백업 다운로드"를 눌러 파일을 저장해두세요.** 업데이트 후 데이터가 비어 있으면 "JSON 백업 파일로 복원"으로 그대로 되살릴 수 있습니다.')
     bc1, bc2 = st.columns(2)
     with bc1:
+        st.caption('JSON 백업에는 보유수량·전략 구성 등은 저장하지만 종가(close)와 가격이력(prices)은 저장하지 않습니다.')
         st.download_button('JSON 백업 다운로드', json.dumps(export_backup_dict(), ensure_ascii=False, indent=2, default=str), file_name=f'portfolio-backup-{date.today().isoformat()}.json', mime='application/json')
         if h:
             st.download_button('CSV 히스토리(요약)', pd.DataFrame(h).drop(columns=['composition', 'by_strategy', 'by_category'], errors='ignore').to_csv(index=False), file_name='rebalance-history.csv', mime='text/csv')
@@ -2006,6 +2060,7 @@ elif page == '리밸런싱 히스토리':
             st.caption(f'매달 스냅샷 저장 시 자동으로도 백업됩니다 (최근 {len(auto_files)}개 보관 중, 최신: {auto_files[-1].name}). 이 파일은 앱이 로컬에서 계속 실행되는 동안만 남아있습니다.')
     with bc2:
         st.markdown('**JSON 백업 복원**')
+        st.caption('복원 시 JSON 안에 close/prices가 있더라도 무시하며, 가격은 선택한 기준일에 새로 조회합니다.')
         st.caption('파일 선택이 브라우저에서 오류가 날 경우 아래의 JSON 직접 붙여넣기를 사용해도 됩니다.')
         restore_mode = st.radio('복원 방식', ['JSON 직접 붙여넣기', '파일 선택'], horizontal=True, key='restore_mode')
         restore_text = ''
@@ -2032,6 +2087,10 @@ elif page == '리밸런싱 히스토리':
                             value = data[k]
                             if k in ('assets','history','equity','cashflows','benchmarks','strategies','category_targets','executions') and not isinstance(value, (list, dict)):
                                 raise ValueError(f'{k} 항목의 형식이 올바르지 않습니다.')
+                            if k == 'assets':
+                                # v8부터는 새 백업뿐 아니라 과거 백업을 복원할 때도
+                                # stale close/prices를 가져오지 않는다. 가격은 선택일에 다시 조회한다.
+                                value = strip_asset_price_data(value)
                             put_state(k, value); restored.append(k)
                         else:
                             skipped.append(k)
