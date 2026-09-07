@@ -615,35 +615,72 @@ def _kr_cached_history(ticker):
 
 
 def fetch_monthly(source, ticker, day, force_refresh=False):
-    """조회일자 기준 최근 13개월의 월별 마지막 거래일 종가.
-    캐시에 충분한 과거 데이터가 있으면 네트워크를 호출하지 않는다.
-    부족할 때만 공공데이터 범위 조회 → 최소 단건 fallback 순으로 시도한다."""
-    ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.DateOffset(months=13)
-    a = start.strftime('%Y%m%d'); b = end.strftime('%Y%m%d')
+    """SMA/모멘텀용 월별 가격을 안정적으로 확보한다.
+
+    핵심 원칙
+    - 선택일 종가는 이 함수와 완전히 분리되어 정확한 선택일만 사용한다.
+    - SMA용 데이터는 최근 13개월의 각 월 마지막 거래일을 사용한다.
+    - 기존 캐시가 10개월 이상이면 재사용한다.
+    - 부족하면 18개월 범위 API를 먼저 다시 시도하고, 그래도 부족한 달만 단건 보완한다.
+    - API가 일부 기간만 반환해도 '7개월에서 끝'나지 않도록 missing month를 채운다.
+    """
+    ticker_norm = kr6(ticker)
+    end = pd.Timestamp(day)
+    # 13개 월별 관측치를 안정적으로 만들기 위해 18개월의 일별 원천 데이터를 확보
+    start = end - pd.DateOffset(months=18)
+    a, b = start.strftime('%Y%m%d'), end.strftime('%Y%m%d')
+
     cached = _kr_cached_history(ticker_norm)
     cached = cached[(cached['date'] >= a) & (cached['date'] <= b)] if not cached.empty else cached
-    if not force_refresh and not cached.empty:
-        cx = cached.copy(); cx['date_dt'] = pd.to_datetime(cx['date'], format='%Y%m%d', errors='coerce'); cx = cx.dropna(subset=['date_dt'])
-        if cx['date_dt'].dt.to_period('M').nunique() >= 10:
-            cx['month'] = cx['date_dt'].dt.to_period('M')
-            out = cx.groupby('month', as_index=False).tail(1).copy(); out['ticker'] = ticker_norm; return out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
-    hist = fetch_data_go_range(ticker_norm, start, end)
-    if hist.empty:
-        # 범위 API가 막힌 경우에만 월말 날짜별 단건 조회로 최소 fallback
-        dates = pd.date_range(end=end, periods=13, freq=_month_end_freq())
-        rows=[]
-        for d in dates:
-            row = find_month_last_trading_price(source, ticker_norm, d, max_back=10)
-            if row: rows.append(row)
-        hist = pd.DataFrame(rows)
-    if hist.empty: return hist
-    hist = hist.drop_duplicates('date').sort_values('date')
-    hist = hist[hist['date'] <= end.strftime('%Y%m%d')]
-    hist['month'] = hist['date'].str[:6]
-    out = hist.groupby('month', as_index=False).tail(1).copy(); out['ticker'] = ticker_norm; out = out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
-    if not out.empty: cache_put_prices(ticker_norm, out.to_dict('records'), market='KR', source='data_go_range')
-    return out
 
+    def monthly_from(df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=['ticker','date','close'])
+        x = df.copy()
+        x['date_dt'] = pd.to_datetime(x['date'], format='%Y%m%d', errors='coerce')
+        x = x.dropna(subset=['date_dt']).sort_values('date_dt')
+        x = x[x['date_dt'] <= end]
+        if x.empty:
+            return pd.DataFrame(columns=['ticker','date','close'])
+        x['month'] = x['date_dt'].dt.to_period('M')
+        out = x.groupby('month', as_index=False).tail(1).copy()
+        out['ticker'] = ticker_norm
+        return out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
+
+    out = monthly_from(cached)
+    if not force_refresh and len(out) >= 13:
+        return out
+
+    # 범위 API는 18개월을 요청해 휴장일/누락 구간 때문에 13개월이 모자라는 현상을 방지
+    hist = fetch_data_go_range(ticker_norm, start, end)
+    if not hist.empty:
+        cache_put_prices(ticker_norm, hist.to_dict('records'), market='KR', source='data_go_range')
+        merged = pd.concat([cached, hist], ignore_index=True) if not cached.empty else hist.copy()
+        out = monthly_from(merged.drop_duplicates('date'))
+
+    if len(out) >= 13:
+        return out
+
+    # 그래도 부족하면 '없는 달'만 찾아 단건 조회한다. 전체 13개월을 무조건 반복 호출하지 않는다.
+    existing_months = set()
+    if not out.empty:
+        existing_months = set(pd.to_datetime(out['date'], format='%Y%m%d').dt.to_period('M').astype(str))
+    target_months = list(pd.period_range(end=end.to_period('M'), periods=13, freq='M'))
+    supplement = []
+    for period in target_months:
+        key = str(period)
+        if key in existing_months:
+            continue
+        month_end = period.to_timestamp(how='end').normalize()
+        row = find_month_last_trading_price(source, ticker_norm, month_end, max_back=12)
+        if row:
+            supplement.append(row)
+    if supplement:
+        cache_put_prices(ticker_norm, supplement, market='KR', source='data_go_single')
+        merged_parts = [x for x in [cached, hist if 'hist' in locals() else pd.DataFrame(), pd.DataFrame(supplement)] if x is not None and not x.empty]
+        merged = pd.concat(merged_parts, ignore_index=True) if merged_parts else pd.DataFrame()
+        out = monthly_from(merged.drop_duplicates('date'))
+    return out
 
 def fetch_daily_recent(source, ticker, day, days=120, force_refresh=False):
     ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.Timedelta(days=days)
@@ -1074,26 +1111,47 @@ MOBILE = device_mode == '📱 모바일'
 st.markdown("""
 <style>
 :root{
-  --sage:#8DA377; --sage-dark:#6E8A5B; --sage-tint:rgba(141,163,119,0.14);
-  --terracotta:#C1795A; --terracotta-dark:#A15E42; --terracotta-tint:rgba(193,121,90,0.14);
-  --olive:#7D7A4F; --olive-dark:#5F5D3C;
-  --beige:#F4EFE6; --beige-deep:#EAE1D0; --ink:#4A4638;
+  --bg:#f6f7f9; --surface:#ffffff; --surface-2:#f0f2f5; --border:#e5e7eb;
+  --text:#111827; --muted:#6b7280; --primary:#2563eb; --primary-soft:#eff6ff;
+  --success:#16a34a; --success-soft:#f0fdf4; --danger:#dc2626; --danger-soft:#fef2f2;
+  --warning:#d97706; --warning-soft:#fffbeb; --radius:16px;
 }
-.stApp{background-color:var(--beige);}
-.block-container{padding-top:1.2rem;padding-bottom:2rem;}
-h1, h2, h3, h4{color:var(--olive-dark) !important;}
-div[data-testid="stMetricValue"]{color:var(--olive-dark) !important;}
-.stButton button[kind="primary"]{background-color:var(--sage-dark) !important;border-color:var(--sage-dark) !important;}
-.stButton button[kind="secondary"], .stButton button:not([kind]){border-color:var(--beige-deep) !important;color:var(--ink) !important;}
-div[data-testid="stExpander"]{background-color:rgba(255,255,255,0.4); border-color:var(--beige-deep) !important;}
-.stTabs [aria-selected="true"]{color:var(--sage-dark) !important; border-bottom-color:var(--sage-dark) !important;}
-@media (max-width: 640px){
-  .block-container{padding:0.6rem 0.7rem 2rem !important;}
-  div[data-testid="stMetricValue"]{font-size:1.3rem !important;}
-  div[data-testid="stMetricLabel"]{font-size:0.8rem !important;}
-  .stButton button{font-size:1rem !important;padding:0.55rem 0.9rem !important;width:100%;}
-  div[data-testid="stDataFrame"]{font-size:0.78rem;}
-  h1{font-size:1.35rem !important;} h3{font-size:1.05rem !important;} h4{font-size:0.95rem !important;}
+.stApp{background:var(--bg); color:var(--text);}
+.block-container{max-width:1220px !important; padding-top:1.2rem !important; padding-bottom:3rem !important;}
+section[data-testid="stSidebar"]{background:#111827 !important; border-right:1px solid #1f2937;}
+section[data-testid="stSidebar"] *{color:#e5e7eb !important;}
+section[data-testid="stSidebar"] .stRadio label{padding:.28rem 0;}
+h1,h2,h3,h4{color:var(--text) !important; letter-spacing:-.025em;}
+h1{font-size:2rem !important; font-weight:800 !important;}
+h2{font-size:1.45rem !important; font-weight:750 !important;}
+h3{font-size:1.12rem !important; font-weight:700 !important;}
+[data-testid="stMetric"]{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1rem 1.1rem; box-shadow:0 1px 2px rgba(0,0,0,.03);}
+[data-testid="stMetricLabel"]{color:var(--muted) !important; font-size:.82rem !important;}
+[data-testid="stMetricValue"]{color:var(--text) !important; font-weight:800 !important;}
+.stButton>button,.stDownloadButton>button{border-radius:10px !important; min-height:2.65rem; font-weight:650; border:1px solid var(--border); background:var(--surface); color:var(--text); transition:.15s ease;}
+.stButton>button:hover,.stDownloadButton>button:hover{border-color:#cbd5e1; box-shadow:0 3px 10px rgba(15,23,42,.08);}
+.stButton button[kind="primary"]{background:var(--primary) !important; border-color:var(--primary) !important; color:white !important;}
+.stTabs [aria-selected="true"]{color:var(--primary) !important; border-bottom-color:var(--primary) !important;}
+div[data-testid="stExpander"]{background:var(--surface); border:1px solid var(--border); border-radius:14px; overflow:hidden;}
+div[data-testid="stDataFrame"], div[data-testid="stTable"]{border:1px solid var(--border); border-radius:12px; overflow:hidden;}
+div[data-baseweb="select"]>div, div[data-baseweb="input"]>div, textarea{border-radius:10px !important; border-color:var(--border) !important; background:var(--surface) !important;}
+hr{border-color:var(--border) !important;}
+.app-hero{background:linear-gradient(135deg,#111827 0%,#1f2937 55%,#2563eb 140%); color:white; border-radius:22px; padding:24px 26px; margin:0 0 20px 0; box-shadow:0 10px 30px rgba(15,23,42,.10);}
+.app-hero .eyebrow{font-size:.75rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; opacity:.68;}
+.app-hero .title{font-size:1.85rem; font-weight:800; letter-spacing:-.035em; margin:.25rem 0 .35rem;}
+.app-hero .sub{font-size:.9rem; color:#cbd5e1;}
+.ui-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px; box-shadow:0 1px 2px rgba(0,0,0,.03);}
+.status-ok{background:var(--success-soft); border-color:#bbf7d0;}
+.status-warn{background:var(--warning-soft); border-color:#fde68a;}
+.status-bad{background:var(--danger-soft); border-color:#fecaca;}
+@media(max-width:640px){
+ .block-container{padding:.7rem .65rem 2.5rem !important;}
+ h1{font-size:1.5rem !important;} h2{font-size:1.28rem !important;}
+ [data-testid="stMetric"]{padding:.72rem .75rem;}
+ [data-testid="stMetricValue"]{font-size:1.2rem !important;}
+ .app-hero{padding:18px 17px; border-radius:16px;}
+ .app-hero .title{font-size:1.35rem;}
+ .stButton>button,.stDownloadButton>button{width:100%;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1133,7 +1191,7 @@ def mobile_card(title, lines, tone=None):
         unsafe_allow_html=True,
     )
 
-st.title('자산배분 리밸런싱 도우미'); st.caption(f'한국/미국 상장 종목 · 10개월 SMA · 12개월 모멘텀 · CAGR/MDD/IRR · v{APP_VERSION}')
+st.markdown(f'''<div class="app-hero"><div class="eyebrow">PORTFOLIO REBALANCING</div><div class="title">자산배분 리밸런싱</div><div class="sub">지정일 종가 · 10개월 SMA · 12개월 모멘텀 · CAGR / MDD / IRR · v{APP_VERSION}</div></div>''', unsafe_allow_html=True)
 
 
 def strategy_rebalance_status(plan_group):
