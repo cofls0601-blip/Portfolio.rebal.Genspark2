@@ -13,6 +13,13 @@ st.set_page_config(page_title='자산배분 리밸런싱 도우미', page_icon='
 # ─────────────────────────────────────────────────────────────────────────────
 MOBILE_CSS = """
 <style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+:root { --app-font: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+html, body, [class*="css"], button, input, textarea, select { font-family: var(--app-font) !important; letter-spacing: -0.012em; }
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+h1, h2, h3, h4, h5, h6 { font-family: var(--app-font) !important; letter-spacing: -0.035em !important; }
+div[data-testid="stMetricValue"] { font-family: var(--app-font) !important; letter-spacing: -0.03em !important; font-variant-numeric: tabular-nums; }
+div[data-testid="stMetricLabel"] { font-family: var(--app-font) !important; letter-spacing: -0.015em !important; }
 .block-container {
     padding-top: 1rem !important;
     padding-bottom: 3rem !important;
@@ -77,6 +84,16 @@ textarea {
     margin: 0.35rem 0 0.7rem 0;
     border-radius: 0.75rem;
     border: 1px solid rgba(128,128,128,.22);
+}
+/* Modern typography / controls */
+.stButton > button, .stDownloadButton > button {
+    font-family: var(--app-font) !important;
+    font-weight: 650 !important;
+    letter-spacing: -0.015em !important;
+}
+div[data-baseweb="select"] *, div[data-baseweb="input"] *, textarea,
+div[data-testid="stDataFrame"], div[data-testid="stTable"] {
+    font-family: var(--app-font) !important;
 }
 </style>
 """
@@ -191,9 +208,10 @@ DEFAULT_ROWS = [
     ('EM', '', '인도 ETF 입력', 'KR', '인도', 25.0, '신흥국 주식'),
     ('EM', '', '베트남 ETF 입력', 'KR', '베트남', 25.0, '신흥국 주식'),
 ]
-# ISA는 실제로 레버리지 상품(418660)을 매매하지만, 트리거 판단은 원지수 성격의 나스닥100(133690) 고점대비 하락률로 해야
-# 레버리지 자체의 변동성에 낚이지 않는다. signal_ticker가 신호 판단용 티커, ticker는 실제 매매 티커.
-SIGNAL_TICKER_OVERRIDE = {'418660': '133690'}
+# ISA는 실제로 레버리지 상품(418660)을 매매하지만, 트리거 판단은 QQQ를 기준으로 한다.
+# signal_ticker는 트리거 신호용 티커이며 실제 매매 티커와 분리한다.
+# QQQ는 미국 상장 ETF이므로 트리거 조회 시 시장도 US로 강제한다.
+SIGNAL_TICKER_OVERRIDE = {'418660': 'QQQ'}
 
 def default_assets():
     rows = []
@@ -1313,9 +1331,15 @@ if page == 'Action Plan':
         trigger_dd = {}
         signal_rows = ap_assets[(ap_assets['strategy'].eq('ISA')) | ((ap_assets['strategy'].eq('SSO')) & (ap_assets['role'].eq('S&P500 기준')))]
         for strat, st_ticker, mkt in zip(signal_rows['strategy'], signal_rows['signal_ticker'], signal_rows['market']):
-            if not st_ticker or st_ticker == 'CASH': continue
+            if strat == 'ISA':
+                # ISA 트리거는 실제 매매 ETF가 아니라 미국 상장 QQQ의 고점 대비 하락률을 사용한다.
+                st_ticker, signal_market = 'QQQ', 'US'
+            else:
+                signal_market = mkt
+            if not st_ticker or st_ticker == 'CASH':
+                continue
             try:
-                d = fetch_price_daily_recent(mkt, source, st_ticker, run_date.isoformat(), 120, force_refresh=force_refresh_prices)
+                d = fetch_price_daily_recent(signal_market, source, st_ticker, run_date.isoformat(), 120, force_refresh=force_refresh_prices)
                 trigger_dd[strat] = drawdown_from_peak(d.sort_values('date')['close'].tolist()) if not d.empty else None
             except Exception as e:
                 errors.append(f'{st_ticker}(트리거): {e}'); trigger_dd[strat] = None
@@ -1417,14 +1441,14 @@ if page == 'Action Plan':
         cash_tgt = total * (0.2 if winner is not None else 1.0)
         plan_rows.append({'전략': 'GSM', '티커': 'CASH', 'ETF': '현금', '현재금액': cash_cur, '목표금액': cash_tgt, '매매액(+매수/-매도)': cash_tgt - cash_cur, '비고': '전략 대기현금' if winner is not None else '전 후보 SMA 이탈'})
 
-    # ---- ISA: 나스닥100(신호) 고점대비 -10% → 레버리지(418660) 분할매수 ----
+    # ---- ISA: QQQ 고점대비 -10% → 레버리지(418660) 분할매수 ----
     isa_all = vdf[vdf['전략'] == 'ISA'] if not vdf.empty else vdf
     if not isa_all.empty:
         isa = isa_all[isa_all['티커'] != 'CASH']; cash_row = isa_all[isa_all['티커'] == 'CASH']
         if not isa.empty:
             r = isa.iloc[0]; dd = trigger_dd.get('ISA'); triggered = dd is not None and dd <= -0.10
             cash = n(cash_row['현재금액'].sum()); buy = cash / 2 if triggered else 0.0
-            note = f'트리거 발동(신호 고점대비 {p(dd)}) → 현금 절반 분할매수' if triggered else f'대기(신호 고점대비 {p(dd) if dd is not None else "데이터 없음"})'
+            note = f'트리거 발동(QQQ 고점대비 {p(dd)}) → 현금 절반 분할매수' if triggered else f'대기(QQQ 고점대비 {p(dd) if dd is not None else "데이터 없음"})'
             plan_rows.append({'전략': 'ISA', '티커': r['티커'], 'ETF': r['ETF'], '현재금액': r['현재금액'], '목표금액': r['현재금액'] + buy, '매매액(+매수/-매도)': buy, '비고': note})
             plan_rows.append({'전략': 'ISA', '티커': 'CASH', 'ETF': '현금', '현재금액': cash, '목표금액': cash - buy, '매매액(+매수/-매도)': -buy, '비고': '매수 재원'})
 
