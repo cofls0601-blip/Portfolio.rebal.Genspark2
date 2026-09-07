@@ -63,9 +63,9 @@ def clean_records(df):
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
     if 'prices' not in df: df['prices'] = [[] for _ in range(len(df))]
     df['prices'] = df['prices'].apply(safe_prices)
-    for c in ['strategy', 'ticker', 'name', 'market', 'role', 'signal_ticker', 'category']:
-        if c not in df: df[c] = ''
-        df[c] = df[c].fillna('').astype(str)
+for c in ['strategy', 'ticker', 'name', 'market', 'role', 'signal_ticker', 'category', 'kind']:
+    if c not in df: df[c] = ''
+    df[c] = df[c].fillna('').astype(str)
     df['signal_ticker'] = df.apply(lambda r: r['signal_ticker'] or r['ticker'], axis=1)
     df['market'] = df['market'].apply(lambda m: m if m in ('KR', 'US') else 'KR')
     df['category'] = df['category'].apply(lambda c: c if c in CATEGORY_OPTIONS else '기타')
@@ -336,20 +336,41 @@ def normalize_payload(payload, requested=''):
 
 DATA_GO_STOCK_URL_DEFAULT = 'https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo'
 DATA_GO_ETF_URL_DEFAULT = 'https://apis.data.go.kr/1160100/service/GetSecuritiesProductInfoService/getETFPriceInfo'
+# 개별주식 일별매매정보(sto/stk_bydd_trd). 응답 OutBlock_1의 키는
+# BAS_DD / ISU_CD / ISU_NM / TDD_CLSPRC로 ETF 엔드포인트와 동일 → normalize_payload 재사용.
+# 모드='krx'에서 자동 우선 호출되며, 비거나 실패면 data.go.kr(data_go)로 부드럽게 넘어간다.
+KRX_STK_URL_DEFAULT = 'https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd'
+
 
 def fetch_day(source, ticker, day):
     ticker_norm = kr6(ticker)
     if source == 'krx':
-        url, key = secret('KRX_BASE_URL'), secret('KRX_AUTH_KEY')
-        if not url or not key: raise RuntimeError('KRX_BASE_URL/KRX_AUTH_KEY 미설정')
-        r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': day.replace('-', '')}, timeout=30)
-        r.raise_for_status(); df = normalize_payload(r.json(), ticker_norm)
-        if df.empty: raise RuntimeError(f'{ticker}: 응답 없음(휴장일이거나 API 설정 확인 필요)')
-        hit = df[df['ticker'].eq(ticker_norm)]
-        if hit.empty: raise RuntimeError(f'{ticker}: 해당 일자 데이터에서 종목코드를 찾지 못함')
-        return hit
-    # data_go: ETF는 GetSecuritiesProductInfoService, 개별주식은 GetStockSecuritiesInfoService로 서비스 자체가
-    # 나뉘어 있어서 하나의 URL만 쓰면 둘 중 한 쪽은 항상 조회가 안 됐다. 두 엔드포인트를 순서대로 시도한다.
+        # 모드='krx'면 ① 개별주식 엔드포인트 → ② 기존(주로 ETF) 엔드포인트 순으로 시도.
+        # 어느 한쪽이라도 해당 ticker를 찾으면 즉시 반환. 둘 다 응답이 비거나(휴장일)
+        # 인증/네트워크 오류면 조용히 넘어가고, 끝에 다다르면 자동으로 data.go.kr로 폴백.
+        key = secret('KRX_AUTH_KEY')
+        if not key: raise RuntimeError('KRX_AUTH_KEY 미설정(secrets.toml 또는 Streamlit secrets에 추가 필요)')
+        krx_tried = False
+        # 같은 URL을 두 번 치는 사고 방지(사용자가 KRX_STK_URL을 KRX_BASE_URL로 지정한 경우)
+        _seen = set()
+        for url in (secret('KRX_STK_URL', KRX_STK_URL_DEFAULT), secret('KRX_BASE_URL', '')):
+            if not url or url in _seen: continue
+            _seen.add(url); krx_tried = True
+            try:
+                r = requests.get(url, headers={'AUTH_KEY': key},
+                                 params={'basDd': day.replace('-', '')}, timeout=30)
+                r.raise_for_status()
+                df = normalize_payload(r.json(), ticker_norm)
+                if df.empty: continue                         # 휴장일・키 불일치 → 다음 URL
+                hit = df[df['ticker'].eq(ticker_norm)]
+                if not hit.empty: return hit                  # 종목 매칭 성공
+            except Exception:
+                continue                                      # 인증/타임아웃 → 다음 URL
+        if krx_tried:
+            source = 'data_go'                                # 자동 폴백 (사용자 모드 전환 불필요)
+        else:
+            raise RuntimeError('KRX_STK_URL 또는 KRX_BASE_URL이 secrets에 설정되어 있지 않음')
+
     key = secret('DATA_GO_SERVICE_KEY')
     if not key: raise RuntimeError('DATA_GO_SERVICE_KEY 미설정')
     etf_url = secret('DATA_GO_ETF_URL', DATA_GO_ETF_URL_DEFAULT)
