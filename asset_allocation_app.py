@@ -281,6 +281,7 @@ def _default_state_value(k):
         'price_policy': PRICE_POLICY_DEFAULT if 'PRICE_POLICY_DEFAULT' in globals() else 'strict',
         'price_mode': PRICE_MODE_DEFAULT if 'PRICE_MODE_DEFAULT' in globals() else 'close',
         'custom_benchmarks': {},
+        'account_cash': {},
     }
     return defaults.get(k, None)
 
@@ -1556,8 +1557,12 @@ def render_diff_table(rows):
 def ensure_cash_rows(assets_df):
     """구버전 DB(계좌별 현금을 별도 kv로 관리하던 시절) 호환: 전략에 CASH 행이 없으면 만들어준다."""
     cfgs = get_strategies()
-    try: legacy_cash = get_state('account_cash')
-    except Exception: legacy_cash = {}
+    try:
+        legacy_cash = get_state('account_cash') or {}
+        if not isinstance(legacy_cash, dict):
+            legacy_cash = {}
+    except Exception:
+        legacy_cash = {}
     changed = False
     for cfg in cfgs:
         code = cfg['code']; sub = assets_df[assets_df['strategy'].eq(code)]
