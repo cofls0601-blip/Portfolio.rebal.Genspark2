@@ -131,7 +131,7 @@ DB_PATH = secret('SQLITE_PATH', _default_db_path)
 
 CATEGORY_OPTIONS = ['현금', '금', '선진국 주식', '신흥국 주식', '선진국 채권', '신흥국 채권', '기타']
 YAHOO_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-APP_VERSION = '8.0'
+APP_VERSION = '13.0'
 KR_API_TIMEOUT = 6
 YAHOO_API_TIMEOUT = 10
 
@@ -268,9 +268,57 @@ def init_db():
         con.execute('INSERT OR IGNORE INTO kv(k,v) VALUES(?,?)', (k, v))
     con.commit(); con.close()
 
+def _default_state_value(k):
+    defaults = {
+        'assets': default_assets().to_dict('records'),
+        'history': [],
+        'equity': [],
+        'cashflows': [],
+        'benchmarks': [],
+        'strategies': DEFAULT_STRATEGIES,
+        'category_targets': {c: 0.0 for c in CATEGORY_OPTIONS},
+        'executions': [],
+        'price_policy': PRICE_POLICY_DEFAULT if 'PRICE_POLICY_DEFAULT' in globals() else 'strict',
+        'price_mode': PRICE_MODE_DEFAULT if 'PRICE_MODE_DEFAULT' in globals() else 'close',
+        'custom_benchmarks': {},
+    }
+    return defaults.get(k, None)
+
 def get_state(k):
-    init_db(); con = sqlite3.connect(DB_PATH); r = con.execute('SELECT v FROM kv WHERE k=?', (k,)).fetchone(); con.close()
-    return json.loads(r[0])
+    """KV 상태를 안전하게 읽는다.
+
+    과거 버전/수동 수정/중단된 쓰기 등으로 kv.v가 비정상 JSON이면
+    해당 키의 안전한 기본값으로 복구해 앱 전체가 연쇄적으로 중단되지 않게 한다.
+    복구가 발생한 키는 DB에도 정상 JSON으로 다시 저장한다.
+    """
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        r = con.execute('SELECT v FROM kv WHERE k=?', (k,)).fetchone()
+        if r is None:
+            value = _default_state_value(k)
+            con.execute('INSERT OR IGNORE INTO kv(k,v) VALUES(?,?)',
+                        (k, json.dumps(value, ensure_ascii=False, default=str)))
+            con.commit()
+            return value
+        raw = r[0]
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value = _default_state_value(k)
+            con.execute('INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)',
+                        (k, json.dumps(value, ensure_ascii=False, default=str)))
+            con.commit()
+            # 다음에 오류 상세를 확인할 수 있도록 세션에 남긴다.
+            try:
+                st.session_state.setdefault('_state_recovery_errors', []).append(
+                    f'{k}: 저장된 상태가 올바른 JSON이 아니어서 기본값으로 복구됨'
+                )
+            except Exception:
+                pass
+            return value
+    finally:
+        con.close()
 
 def put_state(k, v):
     init_db(); con = sqlite3.connect(DB_PATH)
@@ -965,27 +1013,50 @@ def cache_fx_latest():
         return None, None, None
 
 def fetch_yahoo_signal_drawdown(symbol, day, lookback_trading_days=120, force_refresh=False):
-    """트리거용 고점대비 하락률을 계산한다.
+    """미국 ETF 트리거 전용 고점대비 하락률.
 
-    스냅샷 종가와 달리 트리거는 기준일이 휴장일이어도 기준일 이전 마지막
-    거래일을 현재값으로 사용한다. 최근 N개 거래일의 최고 종가 대비 하락률이다.
+    ISA의 실제 매매종목(418660) 가격과 분리해 QQQ 자체의 최근 120거래일
+    원시 종가(close)를 사용한다. 기준일이 미국 휴장일이면 기준일 이전
+    마지막 거래일을 현재값으로 사용한다.
+
+    일반 종목 가격 캐시/스냅샷 가격과 분리된 전용 조회 구간을 사용해
+    'QQQ 데이터가 캐시에 없어 트리거를 계산하지 못하는' 문제를 줄인다.
     """
     target = pd.Timestamp(day)
-    hist = fetch_yahoo_daily_history(symbol, day, 550, force_refresh=force_refresh)
-    if hist.empty:
-        raise RuntimeError(f'{symbol}(트리거): 최근 거래일 가격 데이터 없음')
+    # 2년 이상 확보해 120거래일이 충분히 들어오도록 한다.
+    start = target - pd.Timedelta(days=800)
+    end = target + pd.Timedelta(days=2)
+    hist = fetch_yahoo_range(
+        str(symbol).upper(),
+        start.timestamp(),
+        end.timestamp(),
+        '1d',
+        refresh_key=_refresh_key(force_refresh),
+    )
+    if hist is None or hist.empty:
+        raise RuntimeError(f'{symbol}(트리거): Yahoo 최근 거래일 가격 데이터 없음')
+
     x = hist.copy()
     x['date_dt'] = pd.to_datetime(x['date'], format='%Y%m%d', errors='coerce')
-    use_adj = use_adjclose() and 'adjclose' in x.columns
-    col = 'adjclose' if use_adj else 'close'
-    x[col] = pd.to_numeric(x[col], errors='coerce')
-    x = x.dropna(subset=['date_dt', col]).sort_values('date_dt')
-    x = x[x['date_dt'] <= target].tail(int(lookback_trading_days))
+    # 트리거 정의는 QQQ 원시 종가 기준으로 고정한다.
+    x['close'] = pd.to_numeric(x['close'], errors='coerce')
+    x = x.dropna(subset=['date_dt', 'close'])
+    x = x[(x['date_dt'] <= target) & (x['close'] > 0)].sort_values('date_dt')
+    x = x.tail(int(lookback_trading_days))
+
     if x.empty:
         raise RuntimeError(f'{symbol}(트리거): 기준일 이전 거래일 데이터 없음')
-    if len(x) < min(20, int(lookback_trading_days)):
-        raise RuntimeError(f'{symbol}(트리거): 최근 거래일 데이터가 {len(x)}개뿐입니다.')
-    return drawdown_from_peak(x[col].tolist())
+    if len(x) < int(lookback_trading_days):
+        raise RuntimeError(
+            f'{symbol}(트리거): 최근 {lookback_trading_days}거래일 중 '
+            f'{len(x)}개만 확보되었습니다.'
+        )
+
+    peak = float(x['close'].max())
+    current = float(x.iloc[-1]['close'])
+    if peak <= 0:
+        return None
+    return current / peak - 1
 
 def drawdown_from_peak(closes):
     closes = [c for c in closes if n(c) > 0]
@@ -1766,6 +1837,10 @@ if page == '🔄 리밸런싱 실행':
         st.session_state.assets = assets; put_state('assets', assets.to_dict('records'))
         st.success(f'{ok}개 종목 반영')
         if errors: st.warning(' / '.join(errors[:8]))
+        _state_recovery = st.session_state.pop('_state_recovery_errors', [])
+        if _state_recovery:
+            errors.extend(_state_recovery)
+            st.warning(' / '.join(_state_recovery[:8]))
         if ok:
             _fr_rows = []
             for _, _a in ap_assets.iterrows():
