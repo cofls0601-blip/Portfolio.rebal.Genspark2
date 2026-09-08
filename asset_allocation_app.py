@@ -1,4 +1,4 @@
-import json, sqlite3, re, calendar, math
+import json, sqlite3, re, calendar, math, base64, copy, html
 from datetime import date
 from pathlib import Path
 import pandas as pd
@@ -13,8 +13,7 @@ st.set_page_config(page_title='자산배분 리밸런싱 도우미', page_icon='
 # ─────────────────────────────────────────────────────────────────────────────
 MOBILE_CSS = """
 <style>
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-:root { --app-font: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+:root { --app-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', Arial, sans-serif; }
 html, body, [class*="css"], button, input, textarea, select { font-family: var(--app-font) !important; letter-spacing: -0.012em; }
 body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 h1, h2, h3, h4, h5, h6 { font-family: var(--app-font) !important; letter-spacing: -0.035em !important; }
@@ -131,7 +130,7 @@ DB_PATH = secret('SQLITE_PATH', _default_db_path)
 
 CATEGORY_OPTIONS = ['현금', '금', '선진국 주식', '신흥국 주식', '선진국 채권', '신흥국 채권', '기타']
 YAHOO_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-APP_VERSION = '13.0'
+APP_VERSION = '14.0'
 KR_API_TIMEOUT = 6
 YAHOO_API_TIMEOUT = 10
 
@@ -244,6 +243,10 @@ PRICE_CACHE_SCHEMA_VERSION = '6'  # adjclose 컬럼 추가(배당재투자 기�
 def init_db():
     con = sqlite3.connect(DB_PATH); con.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v TEXT NOT NULL)')
     con.execute('CREATE TABLE IF NOT EXISTS cache_meta(k TEXT PRIMARY KEY, v TEXT)')
+    con.execute('''CREATE TABLE IF NOT EXISTS kv_quarantine(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, k TEXT NOT NULL, raw_v TEXT,
+        reason TEXT, saved_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )''')
     # 구버전 price_cache는 (ticker,date,close) 구조라 새 날짜/시장 캐시와 호환되지 않는다.
     cols = [r[1] for r in con.execute('PRAGMA table_info(price_cache)').fetchall()]
     if cols and not {'market','ticker','date','close','source'}.issubset(set(cols)):
@@ -271,26 +274,33 @@ def init_db():
 def _default_state_value(k):
     defaults = {
         'assets': default_assets().to_dict('records'),
-        'history': [],
-        'equity': [],
-        'cashflows': [],
-        'benchmarks': [],
+        'history': [], 'equity': [], 'cashflows': [], 'benchmarks': [],
         'strategies': DEFAULT_STRATEGIES,
         'category_targets': {c: 0.0 for c in CATEGORY_OPTIONS},
         'executions': [],
         'price_policy': PRICE_POLICY_DEFAULT if 'PRICE_POLICY_DEFAULT' in globals() else 'strict',
         'price_mode': PRICE_MODE_DEFAULT if 'PRICE_MODE_DEFAULT' in globals() else 'close',
-        'custom_benchmarks': {},
-        'account_cash': {},
+        'custom_benchmarks': {}, 'account_cash': {},
     }
-    return defaults.get(k, None)
+    return copy.deepcopy(defaults.get(k, None))
+
+_STATE_TYPES = {
+    'assets': list, 'history': list, 'equity': list, 'cashflows': list,
+    'benchmarks': list, 'strategies': list, 'category_targets': dict,
+    'executions': list, 'price_policy': str, 'price_mode': str,
+    'custom_benchmarks': dict, 'account_cash': dict,
+}
+
+def _quarantine_state(con, k, raw, reason):
+    try:
+        con.execute('INSERT INTO kv_quarantine(k,raw_v,reason) VALUES(?,?,?)',
+                    (str(k), '' if raw is None else str(raw), str(reason)[:500]))
+    except Exception:
+        pass
 
 def get_state(k):
-    """KV 상태를 안전하게 읽는다.
-
-    과거 버전/수동 수정/중단된 쓰기 등으로 kv.v가 비정상 JSON이면
-    해당 키의 안전한 기본값으로 복구해 앱 전체가 연쇄적으로 중단되지 않게 한다.
-    복구가 발생한 키는 DB에도 정상 JSON으로 다시 저장한다.
+    """저장값의 JSON 파싱 실패와 자료형 오류를 모두 방어한다.
+    문제 원문은 kv_quarantine에 보관하고 해당 키만 안전한 기본값으로 복구한다.
     """
     init_db()
     con = sqlite3.connect(DB_PATH)
@@ -300,24 +310,40 @@ def get_state(k):
             value = _default_state_value(k)
             con.execute('INSERT OR IGNORE INTO kv(k,v) VALUES(?,?)',
                         (k, json.dumps(value, ensure_ascii=False, default=str)))
-            con.commit()
-            return value
+            con.commit(); return value
         raw = r[0]
         try:
-            return json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
+            value = json.loads(raw)
+        except Exception as e:
             value = _default_state_value(k)
+            _quarantine_state(con, k, raw, f'JSON decode: {e}')
             con.execute('INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)',
                         (k, json.dumps(value, ensure_ascii=False, default=str)))
             con.commit()
-            # 다음에 오류 상세를 확인할 수 있도록 세션에 남긴다.
-            try:
-                st.session_state.setdefault('_state_recovery_errors', []).append(
-                    f'{k}: 저장된 상태가 올바른 JSON이 아니어서 기본값으로 복구됨'
-                )
-            except Exception:
-                pass
+            try: st.session_state.setdefault('_state_recovery_errors', []).append(f'{k}: 저장값 JSON 손상 → 원문 보관 후 기본값으로 복구')
+            except Exception: pass
             return value
+        expected = _STATE_TYPES.get(k)
+        if expected is not None and not isinstance(value, expected):
+            fallback = _default_state_value(k)
+            _quarantine_state(con, k, raw, f'type mismatch: expected {expected.__name__}, got {type(value).__name__}')
+            con.execute('INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)',
+                        (k, json.dumps(fallback, ensure_ascii=False, default=str)))
+            con.commit()
+            try: st.session_state.setdefault('_state_recovery_errors', []).append(f'{k}: 저장값 자료형 이상 → 원문 보관 후 기본값으로 복구')
+            except Exception: pass
+            return fallback
+        if k in {'assets','history','equity','cashflows','benchmarks','strategies','executions'}:
+            cleaned = [row for row in value if isinstance(row, dict)]
+            if len(cleaned) != len(value):
+                _quarantine_state(con, k, raw, f'invalid list rows removed: {len(value)-len(cleaned)}')
+                con.execute('INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)',
+                            (k, json.dumps(cleaned, ensure_ascii=False, default=str)))
+                con.commit()
+                try: st.session_state.setdefault('_state_recovery_errors', []).append(f'{k}: 비정상 행 {len(value)-len(cleaned)}개 제외')
+                except Exception: pass
+                value = cleaned
+        return value
     finally:
         con.close()
 
@@ -1318,6 +1344,32 @@ def toast(msg):
     except Exception:
         pass
 
+
+def safe_date_text_input(label, default_value=None, key=None, help=None, container=None):
+    """Streamlit DateInput JS chunk 없이 YYYY-MM-DD 문자열로 날짜를 입력한다."""
+    base = pd.Timestamp(default_value or date.today()).date()
+    target = container if container is not None else st
+    raw = target.text_input(label, value=base.isoformat(), key=key, help=help)
+    try:
+        return pd.Timestamp(str(raw).strip()).date()
+    except Exception:
+        st.warning(f'{label}: YYYY-MM-DD 형식이 아닙니다. {base.isoformat()}을 사용합니다.')
+        return base
+
+def browser_download_link(label, data, file_name, mime='text/plain'):
+    """Streamlit DownloadButton/axios chunk 없이 브라우저 기본 다운로드를 사용한다."""
+    if isinstance(data, str):
+        enc = 'utf-8-sig' if mime in ('text/csv', 'application/csv') else 'utf-8'
+        raw = data.encode(enc)
+    else:
+        raw = bytes(data)
+    b64 = base64.b64encode(raw).decode('ascii')
+    st.markdown(
+        f'<a download="{html.escape(str(file_name), quote=True)}" href="data:{html.escape(str(mime), quote=True)};base64,{b64}" '
+        f'style="display:inline-block;padding:.55rem .9rem;border:1px solid rgba(128,128,128,.35);border-radius:.55rem;text-decoration:none;font-weight:650;margin:.15rem 0 .4rem 0">{html.escape(str(label))}</a>',
+        unsafe_allow_html=True,
+    )
+
 # ---------- 전략 레지스트리 ----------
 def get_strategies():
     try:
@@ -1400,7 +1452,7 @@ def compute_category_breakdown(assets_df, active_only=True):
 
 # 백업/복원에 포함해야 하는 모든 kv 키. 새 상태를 추가할 때마다 여기 한 곳만 늘리면
 # 백업 JSON이 저절로 최신 스키마를 따라가서, "백업엔 있는데 복원엔 빠졌다" 같은 실수를 막는다.
-ALL_KV_KEYS = ['assets', 'history', 'equity', 'cashflows', 'benchmarks', 'strategies', 'category_targets', 'executions', 'price_policy', 'price_mode', 'custom_benchmarks']
+ALL_KV_KEYS = ['assets', 'history', 'equity', 'cashflows', 'benchmarks', 'strategies', 'category_targets', 'executions', 'price_policy', 'price_mode', 'custom_benchmarks', 'account_cash']
 BACKUP_SCHEMA_VERSION = 3
 PRICE_FIELDS_EXCLUDED_FROM_BACKUP = {'close', 'prices', 'last_fetch_date', 'price_source'}
 
@@ -1751,7 +1803,7 @@ if page == '🔄 리밸런싱 실행':
     active_codes = [c['code'] for c in cfgs]
     ap_assets = assets[assets['strategy'].isin(active_codes)]
     c1, c2 = st.columns(2)
-    run_date = c1.date_input('리밸런싱 기준일', date.today())
+    run_date = safe_date_text_input('리밸런싱 기준일 (YYYY-MM-DD)', date.today(), key='run_date', container=c1)
     source = 'krx'  # 한국은 KRX 우선 → 공공데이터 자동 폴백. 사용자가 소스를 고를 필요가 없도록 통일.
     # 기준일이 바뀌면 이전 기준일의 조회 결과(실패 목록·트리거 판정)는 무효 → 자동 정리
     if st.session_state.get('last_run_date') != run_date.isoformat():
@@ -2419,9 +2471,9 @@ elif page == '⚙️ 설정':
         if weights_ok: st.success('목표비중 합계 100% ✓ (현금 행 포함)')
         else: st.error(f'목표비중 합계 {asset_sum:.1f}% — 현금 행을 포함해 정확히 100%가 되어야 저장됩니다.')
     if not subset.empty:
-        st.download_button('현재 전략 구성 CSV 다운로드',
-                           subset[['ticker', 'name', 'market', 'shares', 'close', 'target_pct', 'category']].to_csv(index=False),
-                           file_name=f'{chosen}-assets.csv', mime='text/csv')
+        browser_download_link('현재 전략 구성 CSV 다운로드',
+                              subset[['ticker', 'name', 'market', 'shares', 'close', 'target_pct', 'category']].to_csv(index=False),
+                              f'{chosen}-assets.csv', 'text/csv')
 
     st.markdown('### 종목 검색·추가 (ETF + 개별주식, 한국/미국)')
     mkt_choice = st.radio('시장', ['한국(KRX)', '미국(Yahoo)'], horizontal=True, key='mkt_choice')
@@ -2534,7 +2586,7 @@ elif page == '⚙️ 설정':
 
     st.divider(); st.markdown('### 히스토리 저장')
     st.caption('현재 모든 전략의 구성·비중·분류를 한 번에 히스토리와 총자산 시계열에 저장합니다.')
-    hist_date = st.date_input('저장할 날짜', date.today(), key='hist_save_date')
+    hist_date = safe_date_text_input('저장할 날짜 (YYYY-MM-DD)', date.today(), key='hist_save_date')
     _past_date = (pd.Timestamp(hist_date).date() < date.today())
     if _past_date:
         st.caption('과거 날짜로 저장하면 해당 날짜의 종가를 캐시에서 재사용하고(없으면 다시 조회) 그 시점 평가액으로 기록합니다. 조회할 수 없는 종목은 현재 종가로 저장됩니다.')
@@ -2716,9 +2768,9 @@ elif page == '📈 히스토리':
     bc1, bc2 = st.columns(2)
     with bc1:
         st.caption('JSON 백업에는 보유수량·전략 구성 등은 저장하지만 종가(close)와 가격이력(prices)은 저장하지 않습니다.')
-        st.download_button('JSON 백업 다운로드', json.dumps(export_backup_dict(), ensure_ascii=False, indent=2, default=str), file_name=f'portfolio-backup-{date.today().isoformat()}.json', mime='application/json')
+        browser_download_link('JSON 백업 다운로드', json.dumps(export_backup_dict(), ensure_ascii=False, indent=2, default=str), f'portfolio-backup-{date.today().isoformat()}.json', 'application/json')
         if h:
-            st.download_button('CSV 히스토리(요약)', pd.DataFrame(h).drop(columns=['composition', 'by_strategy', 'by_category'], errors='ignore').to_csv(index=False), file_name='rebalance-history.csv', mime='text/csv')
+            browser_download_link('CSV 히스토리(요약)', pd.DataFrame(h).drop(columns=['composition', 'by_strategy', 'by_category'], errors='ignore').to_csv(index=False), 'rebalance-history.csv', 'text/csv')
         backup_dir = Path.home() / '.asset_allocation_app' / 'backups'
         auto_files = sorted(backup_dir.glob('backup-*.json')) if backup_dir.exists() else []
         if auto_files:
@@ -2726,18 +2778,8 @@ elif page == '📈 히스토리':
     with bc2:
         st.markdown('**JSON 백업 복원**')
         st.caption('복원 시 JSON 안에 close/prices가 있더라도 무시하며, 가격은 선택한 기준일에 새로 조회합니다.')
-        st.caption('파일 선택이 브라우저에서 오류가 날 경우 아래의 JSON 직접 붙여넣기를 사용해도 됩니다.')
-        restore_mode = st.radio('복원 방식', ['JSON 직접 붙여넣기', '파일 선택'], horizontal=True, key='restore_mode')
-        restore_text = ''
-        if restore_mode == '파일 선택':
-            up = st.file_uploader('JSON 백업 파일 선택', type=['json'], key='restore_upload', help='Streamlit 파일 선택기가 정상적으로 로드되는 경우 사용합니다.')
-            if up is not None:
-                try:
-                    restore_text = up.getvalue().decode('utf-8-sig')
-                except Exception as e:
-                    st.error(f'파일을 읽지 못했습니다: {e}')
-        else:
-            restore_text = st.text_area('JSON 내용 붙여넣기', height=180, key='restore_json_text', placeholder='{\n  "assets": [...],\n  "strategies": [...]\n}')
+        st.caption('FileUploader 모듈 오류를 피하기 위해 복원은 JSON 직접 붙여넣기 방식만 사용합니다.')
+        restore_text = st.text_area('JSON 내용 붙여넣기', height=220, key='restore_json_text', placeholder='{\n  \"assets\": [...],\n  \"strategies\": [...]\n}')
 
         if restore_text.strip():
             st.warning('복원하면 현재 저장된 데이터를 덮어씁니다.')
@@ -2958,7 +3000,7 @@ else:  # ⚖️ 전략 비교
     st.divider(); st.subheader('입출금 원장')
     st.caption('전략(계좌)을 지정하면 연금저축/ISA 납입한도 추적과 전략별 벤치마크 비교에 쓰입니다. 지정하지 않으면 전체 포트폴리오 성과 계산에만 반영됩니다.')
     cf_codes = ['(지정 안 함)'] + strategy_codes()
-    cd = st.date_input('거래일', date.today(), key='cd'); ca = st.number_input('금액(입금 + / 출금 -)', step=100000.0, key='ca')
+    cd = safe_date_text_input('거래일 (YYYY-MM-DD)', date.today(), key='cd'); ca = st.number_input('금액(입금 + / 출금 -)', step=100000.0, key='ca')
     cstrat = st.selectbox('전략(계좌)', cf_codes, key='cstrat'); cm = st.text_input('메모', key='cm')
     if st.button('입출금 저장'):
         x = get_state('cashflows')
@@ -3007,29 +3049,29 @@ else:  # ⚖️ 전략 비교
     else:
         st.caption('아직 입출금 기록이 없습니다. 위에서 추가하거나 아래 CSV/정기납입으로 불러올 수 있습니다.')
     with st.expander('벌크 입력 · 정기납입 자동 생성', expanded=False):
-        st.caption('CSV 형식: date,amount,memo,strategy (첫 줄 헤더). amount는 입금 + / 출금 -.')
-        up_csv = st.file_uploader('입출금 CSV 업로드(추가)', type=['csv'], key='cf_csv')
-        if up_csv is not None:
+        st.caption('CSV 형식: date,amount,memo,strategy (첫 줄 헤더). FileUploader 대신 내용을 직접 붙여넣습니다.')
+        csv_text = st.text_area('입출금 CSV 내용 붙여넣기', height=140, key='cf_csv_text', placeholder='date,amount,memo,strategy\n2026-09-08,1000000,추가입금,ISA')
+        if csv_text.strip():
             try:
-                df_in = pd.read_csv(up_csv)
+                from io import StringIO
+                df_in = pd.read_csv(StringIO(csv_text))
                 if {'date', 'amount'}.issubset(df_in.columns):
                     if st.button('CSV 기록 추가', key='cf_csv_add'):
-                        cur = get_state('cashflows')
+                        cur = get_state('cashflows'); added_rows = 0
                         for _, row in df_in.iterrows():
                             try:
-                                amt = float(row['amount'])
-                                d_str = pd.Timestamp(str(row['date'])).strftime('%Y-%m-%d')
+                                amt = float(row['amount']); d_str = pd.Timestamp(str(row['date'])).strftime('%Y-%m-%d')
                             except Exception:
                                 continue
-                            cur.append({'date': d_str, 'amount': amt, 'memo': str(row.get('memo') or ''), 'strategy': str(row.get('strategy') or '')})
-                        put_state('cashflows', cur); st.success(f'{len(df_in)}건 추가했습니다.'); st.rerun()
+                            cur.append({'date': d_str, 'amount': amt, 'memo': str(row.get('memo') or ''), 'strategy': str(row.get('strategy') or '')}); added_rows += 1
+                        put_state('cashflows', cur); st.success(f'{added_rows}건 추가했습니다.'); st.rerun()
                 else:
                     st.warning('CSV에 date, amount 열이 있어야 합니다.')
             except Exception as e:
-                st.error(f'CSV를 읽지 못했습니다: {e}')
+                st.error(f'CSV 내용을 읽지 못했습니다: {e}')
         st.markdown('**정기납입 자동 생성**')
         rc1, rc2, rc3, rc4 = st.columns(4)
-        _cf_start = rc1.date_input('시작일', date.today(), key='cf_start')
+        _cf_start = safe_date_text_input('시작일 (YYYY-MM-DD)', date.today(), key='cf_start', container=rc1)
         _cf_months = rc2.number_input('개월 수', min_value=1, max_value=120, value=12, key='cf_months')
         _cf_amt = rc3.number_input('월 납입액', step=100000.0, value=1000000.0, key='cf_amt')
         _cf_strat = rc4.selectbox('전략', cf_codes, key='cf_strat')
