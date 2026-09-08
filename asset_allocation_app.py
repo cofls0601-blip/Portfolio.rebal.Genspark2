@@ -1,4 +1,4 @@
-import json, sqlite3, re, calendar
+import json, sqlite3, re
 from datetime import date
 from pathlib import Path
 import pandas as pd
@@ -6,108 +6,6 @@ import requests
 import streamlit as st
 
 st.set_page_config(page_title='자산배분 리밸런싱 도우미', page_icon='📊', layout='wide')
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Mobile readability / responsive UI
-# ─────────────────────────────────────────────────────────────────────────────
-MOBILE_CSS = """
-<style>
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-:root { --app-font: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-html, body, [class*="css"], button, input, textarea, select { font-family: var(--app-font) !important; letter-spacing: -0.012em; }
-body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-h1, h2, h3, h4, h5, h6 { font-family: var(--app-font) !important; letter-spacing: -0.035em !important; }
-div[data-testid="stMetricValue"] { font-family: var(--app-font) !important; letter-spacing: -0.03em !important; font-variant-numeric: tabular-nums; }
-div[data-testid="stMetricLabel"] { font-family: var(--app-font) !important; letter-spacing: -0.015em !important; }
-.block-container {
-    padding-top: 1rem !important;
-    padding-bottom: 3rem !important;
-    padding-left: 0.75rem !important;
-    padding-right: 0.75rem !important;
-    max-width: 100% !important;
-}
-div[data-testid="stMarkdownContainer"],
-div[data-testid="stText"],
-div[data-testid="stMetricValue"],
-div[data-testid="stMetricLabel"] {
-    overflow-wrap: anywhere;
-    word-break: keep-all;
-}
-.stButton > button,
-.stDownloadButton > button,
-button[kind="primary"],
-button[kind="secondary"] {
-    min-height: 2.75rem !important;
-    padding: 0.55rem 0.85rem !important;
-    border-radius: 0.65rem !important;
-}
-div[data-baseweb="select"] > div,
-div[data-baseweb="input"] > div,
-textarea {
-    min-height: 2.65rem !important;
-}
-@media (min-width: 641px) {
-    .block-container {
-        max-width: 1180px !important;
-        padding-left: 2.25rem !important;
-        padding-right: 2.25rem !important;
-    }
-}
-@media (max-width: 640px) {
-    .block-container {
-        padding-left: 0.65rem !important;
-        padding-right: 0.65rem !important;
-    }
-    h1 { font-size: 1.55rem !important; line-height: 1.25 !important; }
-    h2 { font-size: 1.30rem !important; line-height: 1.3 !important; }
-    h3 { font-size: 1.12rem !important; line-height: 1.35 !important; }
-    div[data-testid="stMetric"] {
-        padding: 0.55rem 0.65rem !important;
-        border-radius: 0.65rem !important;
-    }
-    div[data-testid="stMetricValue"] { font-size: 1.15rem !important; }
-    div[data-testid="stMetricLabel"] { font-size: 0.78rem !important; }
-    div[data-testid="stDataFrame"],
-    div[data-testid="stTable"] {
-        max-width: 100% !important;
-        overflow-x: auto !important;
-    }
-    details summary { padding: 0.75rem 0.5rem !important; }
-    section[data-testid="stSidebar"] {
-        min-width: min(82vw, 320px) !important;
-        max-width: min(88vw, 360px) !important;
-    }
-}
-.mobile-card {
-    padding: 0.75rem 0.8rem;
-    margin: 0.35rem 0 0.7rem 0;
-    border-radius: 0.75rem;
-    border: 1px solid rgba(128,128,128,.22);
-}
-.weight-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 13px;margin:8px 0;box-shadow:0 1px 2px rgba(15,23,42,.03);}
-.weight-head{display:flex;justify-content:space-between;gap:10px;align-items:center;font-weight:700;}
-.weight-meta{font-size:.78rem;color:var(--muted);margin-top:5px;}
-.weight-bar{height:12px;display:flex;overflow:hidden;border-radius:999px;background:#eef0f3;margin-top:9px;}
-.weight-legend{display:flex;gap:9px;flex-wrap:wrap;font-size:.72rem;color:var(--muted);margin-top:7px;}
-.weight-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px;}
-.history-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px;margin:8px 0;box-shadow:0 1px 2px rgba(15,23,42,.03);}
-.history-date{font-weight:750;color:var(--text);}
-.history-sub{font-size:.78rem;color:var(--muted);margin-top:3px;}
-/* Modern typography / controls */
-.stButton > button, .stDownloadButton > button {
-    font-family: var(--app-font) !important;
-    font-weight: 650 !important;
-    letter-spacing: -0.015em !important;
-}
-div[data-baseweb="select"] *, div[data-baseweb="input"] *, textarea,
-div[data-testid="stDataFrame"], div[data-testid="stTable"] {
-    font-family: var(--app-font) !important;
-}
-</style>
-"""
-
-st.markdown(MOBILE_CSS, unsafe_allow_html=True)
 ROOT = Path(__file__).parent
 
 def secret(name, default=''):
@@ -131,9 +29,6 @@ DB_PATH = secret('SQLITE_PATH', _default_db_path)
 
 CATEGORY_OPTIONS = ['현금', '금', '선진국 주식', '신흥국 주식', '선진국 채권', '신흥국 채권', '기타']
 YAHOO_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-APP_VERSION = '7.0'
-KR_API_TIMEOUT = 6
-YAHOO_API_TIMEOUT = 10
 
 # ---------- Safe data normalization ----------
 def safe_prices(value, fallback=None):
@@ -164,15 +59,12 @@ def n(v, default=0.0):
 def clean_records(df):
     df = df.copy()
     for c in ['target_pct', 'shares', 'close']:
-        if c not in df:
-            df[c] = 0.0
+        if c not in df: df[c] = 0.0
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-    if 'prices' not in df:
-        df['prices'] = [[] for _ in range(len(df))]
+    if 'prices' not in df: df['prices'] = [[] for _ in range(len(df))]
     df['prices'] = df['prices'].apply(safe_prices)
-    for c in ['strategy', 'ticker', 'name', 'market', 'role', 'signal_ticker', 'category', 'kind']:
-        if c not in df:
-            df[c] = ''
+    for c in ['strategy', 'ticker', 'name', 'market', 'role', 'signal_ticker', 'category']:
+        if c not in df: df[c] = ''
         df[c] = df[c].fillna('').astype(str)
     df['signal_ticker'] = df.apply(lambda r: r['signal_ticker'] or r['ticker'], axis=1)
     df['market'] = df['market'].apply(lambda m: m if m in ('KR', 'US') else 'KR')
@@ -217,10 +109,9 @@ DEFAULT_ROWS = [
     ('EM', '', '인도 ETF 입력', 'KR', '인도', 25.0, '신흥국 주식'),
     ('EM', '', '베트남 ETF 입력', 'KR', '베트남', 25.0, '신흥국 주식'),
 ]
-# ISA는 실제로 레버리지 상품(418660)을 매매하지만, 트리거 판단은 QQQ를 기준으로 한다.
-# signal_ticker는 트리거 신호용 티커이며 실제 매매 티커와 분리한다.
-# QQQ는 미국 상장 ETF이므로 트리거 조회 시 시장도 US로 강제한다.
-SIGNAL_TICKER_OVERRIDE = {'418660': 'QQQ'}
+# ISA는 실제로 레버리지 상품(418660)을 매매하지만, 트리거 판단은 원지수 성격의 나스닥100(133690) 고점대비 하락률로 해야
+# 레버리지 자체의 변동성에 낚이지 않는다. signal_ticker가 신호 판단용 티커, ticker는 실제 매매 티커.
+SIGNAL_TICKER_OVERRIDE = {'418660': '133690'}
 
 def default_assets():
     rows = []
@@ -238,20 +129,15 @@ def default_assets():
 # 이후 로직을 아무리 고쳐도 캐시가 "성공"으로 잘못 응답하며 그 나쁜 값을 계속 돌려주기 때문에
 # 사용자가 매번 수동으로 캐시를 지워야 했다. 이제는 코드 쪽에서 캐시가 이 버전으로 만들어진 게
 # 맞는지 확인하고, 아니면 알아서 지운다.
-PRICE_CACHE_SCHEMA_VERSION = '5'  # v8: cache DataFrame ticker 보장 + 가격 조회 보강
+PRICE_CACHE_SCHEMA_VERSION = '2'
 
 def init_db():
     con = sqlite3.connect(DB_PATH); con.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v TEXT NOT NULL)')
+    con.execute('CREATE TABLE IF NOT EXISTS price_cache(ticker TEXT, date TEXT, close REAL, PRIMARY KEY(ticker, date))')
     con.execute('CREATE TABLE IF NOT EXISTS cache_meta(k TEXT PRIMARY KEY, v TEXT)')
-    # 구버전 price_cache는 (ticker,date,close) 구조라 새 날짜/시장 캐시와 호환되지 않는다.
-    cols = [r[1] for r in con.execute('PRAGMA table_info(price_cache)').fetchall()]
-    if cols and not {'market','ticker','date','close','source'}.issubset(set(cols)):
-        con.execute('DROP TABLE price_cache')
-    con.execute('CREATE TABLE IF NOT EXISTS price_cache(market TEXT, ticker TEXT, date TEXT, close REAL, source TEXT, PRIMARY KEY(market, ticker, date))')
-    con.execute('CREATE TABLE IF NOT EXISTS fx_cache(date TEXT PRIMARY KEY, rate REAL, source TEXT)')
     row = con.execute("SELECT v FROM cache_meta WHERE k='schema_version'").fetchone()
     if row is None or row[0] != PRICE_CACHE_SCHEMA_VERSION:
-        con.execute('DELETE FROM price_cache'); con.execute('DELETE FROM fx_cache')
+        con.execute('DELETE FROM price_cache')
         con.execute("INSERT OR REPLACE INTO cache_meta(k,v) VALUES('schema_version', ?)", (PRICE_CACHE_SCHEMA_VERSION,))
     for k, v in [
         ('assets', default_assets().to_json(orient='records', force_ascii=False)),
@@ -272,85 +158,25 @@ def put_state(k, v):
     con.execute('INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)', (k, json.dumps(v, ensure_ascii=False, default=str)))
     con.commit(); con.close()
 
-# ---------- 종목별 가격 캐시 ----------
-# DB 캐시와 Streamlit 메모리 캐시를 분리해서 관리한다.
-# "캐시 삭제" 버튼을 눌렀는데 Yahoo 결과가 다시 나오는 문제는
-# st.cache_data와 SQLite 캐시가 서로 다른 층이기 때문에 발생할 수 있다.
-PRICE_CACHE_TTL_SECONDS = 60 * 60 * 24 * 30
+# ---------- 종목별 가격 캐시 (과거 확정 데이터는 다시 불러올 필요 없음) ----------
+def cache_get_prices(ticker):
+    init_db(); con = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query('SELECT date, close FROM price_cache WHERE ticker=? ORDER BY date', con, params=(ticker,))
+    con.close()
+    return df
 
-def _cache_market_ticker(market, ticker):
-    market = str(market or 'KR').upper(); ticker = str(ticker).strip()
-    return market, (kr6(ticker) if market == 'KR' else ticker.upper())
-
-def cache_get_prices(ticker, market='KR'):
-    """가격 캐시를 항상 ticker/date/close 3개 컬럼으로 반환한다.
-    v7은 SQL에서 date, close만 읽은 뒤 월별/일별 로직에서 ticker 컬럼을 선택해
-    KeyError("['ticker'] not in index")가 발생했다.
-    """
-    market, ticker_norm = _cache_market_ticker(market, ticker); init_db(); con=sqlite3.connect(DB_PATH)
-    try:
-        df=pd.read_sql_query('SELECT ticker, date, close FROM price_cache WHERE market=? AND ticker=? ORDER BY date',con,params=(market,ticker_norm))
-    finally:
-        con.close()
-    if df.empty:
-        return pd.DataFrame(columns=['ticker','date','close'])
-    df['ticker']=df['ticker'].astype(str)
-    df['date']=df['date'].astype(str).str.replace('-','',regex=False)
-    df['close']=pd.to_numeric(df['close'],errors='coerce')
-    df=df.dropna(subset=['date','close']); df=df[df['close']>0]
-    return df[['ticker','date','close']].reset_index(drop=True)
-
-def cache_put_prices(ticker, rows, market='KR', source=''):
-    market,ticker_norm=_cache_market_ticker(market,ticker)
-    if not rows: return 0
-    clean=[]
-    for r in rows:
-        if not isinstance(r,dict): continue
-        d=str(r.get('date','')).replace('-','')
-        try: close=float(r.get('close'))
-        except (TypeError,ValueError): continue
-        if len(d)==8 and close>0: clean.append((market,ticker_norm,d,close,str(r.get('source',source) or source)))
-    if not clean: return 0
-    init_db(); con=sqlite3.connect(DB_PATH)
-    try: con.executemany('INSERT OR REPLACE INTO price_cache(market,ticker,date,close,source) VALUES(?,?,?,?,?)',clean); con.commit()
-    finally: con.close()
-    return len(clean)
+def cache_put_prices(ticker, rows):
+    if not rows: return
+    init_db(); con = sqlite3.connect(DB_PATH)
+    con.executemany('INSERT OR REPLACE INTO price_cache(ticker,date,close) VALUES(?,?,?)',
+                     [(ticker, r['date'], r['close']) for r in rows if r.get('date') and r.get('close') is not None])
+    con.commit(); con.close()
 
 def cache_clear_prices():
-    init_db(); con=sqlite3.connect(DB_PATH)
-    try: con.execute('DELETE FROM price_cache'); con.execute('DELETE FROM fx_cache'); con.commit()
-    finally: con.close()
-    clear_runtime_price_cache()
+    init_db(); con = sqlite3.connect(DB_PATH); con.execute('DELETE FROM price_cache'); con.commit(); con.close()
 
-def cache_clear_prices_for(ticker, market=None):
-    init_db(); con=sqlite3.connect(DB_PATH)
-    try:
-        if market:
-            market,ticker_norm=_cache_market_ticker(market,ticker); con.execute('DELETE FROM price_cache WHERE market=? AND ticker=?',(market,ticker_norm))
-        else: con.execute('DELETE FROM price_cache WHERE ticker IN (?,?)',(str(ticker).upper(),kr6(ticker)))
-        con.commit()
-    finally: con.close()
-    clear_runtime_price_cache()
-
-def cache_clear_fx():
-    init_db(); con=sqlite3.connect(DB_PATH)
-    try: con.execute('DELETE FROM fx_cache'); con.commit()
-    finally: con.close()
-    try: get_usd_krw_rate.clear()
-    except Exception: pass
-    clear_runtime_price_cache()
-
-def clear_runtime_price_cache():
-    try: fetch_yahoo_range.clear()
-    except Exception: pass
-
-def clear_all_price_caches():
-    clear_runtime_price_cache()
-    for fn in (load_kr_individual_stocks, load_krx_universe):
-        try: fn.clear()
-        except Exception: pass
-
-PRICE_DATA_HELP = ('가격은 사용자가 지정한 조회일자를 그대로 기준으로 가져옵니다. 한국/미국 모두 해당 날짜의 종가가 없으면 날짜를 임의로 바꾸지 않습니다. 미국 종목은 같은 조회일자의 USD/KRW 환율을 적용해 원화 평가액을 계산합니다.')
+def cache_clear_prices_for(ticker):
+    init_db(); con = sqlite3.connect(DB_PATH); con.execute('DELETE FROM price_cache WHERE ticker=?', (kr6(ticker),)); con.commit(); con.close()
 
 # ---------- KRX 종목(ETF+개별주식) 카탈로그 ----------
 
@@ -376,7 +202,7 @@ def load_kr_individual_stocks(asof):
                 r = requests.get(secret('DATA_GO_URL', DATA_GO_STOCK_URL_DEFAULT), params={
                     'serviceKey': key, 'resultType': 'json', 'numOfRows': 1000, 'pageNo': page,
                     'basDt': d.strftime('%Y%m%d'),
-                }, timeout=KR_API_TIMEOUT)
+                }, timeout=30)
                 r.raise_for_status()
                 body = (r.json().get('response') or {}).get('body') or {}
                 items = (body.get('items') or {}).get('item') or []
@@ -417,7 +243,7 @@ def load_krx_universe(asof):
         d = pd.Timestamp(asof); got = False; etf_err = ''
         for _ in range(10):
             try:
-                r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': d.strftime('%Y%m%d')}, timeout=KR_API_TIMEOUT)
+                r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': d.strftime('%Y%m%d')}, timeout=30)
                 r.raise_for_status()
                 rows = r.json().get('OutBlock_1', [])
                 if rows:
@@ -510,41 +336,20 @@ def normalize_payload(payload, requested=''):
 
 DATA_GO_STOCK_URL_DEFAULT = 'https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo'
 DATA_GO_ETF_URL_DEFAULT = 'https://apis.data.go.kr/1160100/service/GetSecuritiesProductInfoService/getETFPriceInfo'
-# 개별주식 일별매매정보(sto/stk_bydd_trd). 응답 OutBlock_1의 키는
-# BAS_DD / ISU_CD / ISU_NM / TDD_CLSPRC로 ETF 엔드포인트와 동일 → normalize_payload 재사용.
-# 모드='krx'에서 자동 우선 호출되며, 비거나 실패면 data.go.kr(data_go)로 부드럽게 넘어간다.
-KRX_STK_URL_DEFAULT = 'https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd'
-
 
 def fetch_day(source, ticker, day):
     ticker_norm = kr6(ticker)
     if source == 'krx':
-        # 모드='krx'면 ① 개별주식 엔드포인트 → ② 기존(주로 ETF) 엔드포인트 순으로 시도.
-        # 어느 한쪽이라도 해당 ticker를 찾으면 즉시 반환. 둘 다 응답이 비거나(휴장일)
-        # 인증/네트워크 오류면 조용히 넘어가고, 끝에 다다르면 자동으로 data.go.kr로 폴백.
-        key = secret('KRX_AUTH_KEY')
-        if not key: raise RuntimeError('KRX_AUTH_KEY 미설정(secrets.toml 또는 Streamlit secrets에 추가 필요)')
-        krx_tried = False
-        # 같은 URL을 두 번 치는 사고 방지(사용자가 KRX_STK_URL을 KRX_BASE_URL로 지정한 경우)
-        _seen = set()
-        for url in (secret('KRX_STK_URL', KRX_STK_URL_DEFAULT), secret('KRX_BASE_URL', '')):
-            if not url or url in _seen: continue
-            _seen.add(url); krx_tried = True
-            try:
-                r = requests.get(url, headers={'AUTH_KEY': key},
-                                 params={'basDd': day.replace('-', '')}, timeout=KR_API_TIMEOUT)
-                r.raise_for_status()
-                df = normalize_payload(r.json(), ticker_norm)
-                if df.empty: continue                         # 휴장일・키 불일치 → 다음 URL
-                hit = df[df['ticker'].eq(ticker_norm)]
-                if not hit.empty: return hit                  # 종목 매칭 성공
-            except Exception:
-                continue                                      # 인증/타임아웃 → 다음 URL
-        if krx_tried:
-            source = 'data_go'                                # 자동 폴백 (사용자 모드 전환 불필요)
-        else:
-            raise RuntimeError('KRX_STK_URL 또는 KRX_BASE_URL이 secrets에 설정되어 있지 않음')
-
+        url, key = secret('KRX_BASE_URL'), secret('KRX_AUTH_KEY')
+        if not url or not key: raise RuntimeError('KRX_BASE_URL/KRX_AUTH_KEY 미설정')
+        r = requests.get(url, headers={'AUTH_KEY': key}, params={'basDd': day.replace('-', '')}, timeout=30)
+        r.raise_for_status(); df = normalize_payload(r.json(), ticker_norm)
+        if df.empty: raise RuntimeError(f'{ticker}: 응답 없음(휴장일이거나 API 설정 확인 필요)')
+        hit = df[df['ticker'].eq(ticker_norm)]
+        if hit.empty: raise RuntimeError(f'{ticker}: 해당 일자 데이터에서 종목코드를 찾지 못함')
+        return hit
+    # data_go: ETF는 GetSecuritiesProductInfoService, 개별주식은 GetStockSecuritiesInfoService로 서비스 자체가
+    # 나뉘어 있어서 하나의 URL만 쓰면 둘 중 한 쪽은 항상 조회가 안 됐다. 두 엔드포인트를 순서대로 시도한다.
     key = secret('DATA_GO_SERVICE_KEY')
     if not key: raise RuntimeError('DATA_GO_SERVICE_KEY 미설정')
     etf_url = secret('DATA_GO_ETF_URL', DATA_GO_ETF_URL_DEFAULT)
@@ -554,7 +359,7 @@ def fetch_day(source, ticker, day):
         try:
             # 금융위원회 API는 종목코드 검색이 itmsNm(종목명)이 아니라 likeSrtnCd(종목코드 LIKE검색)다.
             r = requests.get(url, params={'serviceKey': key, 'resultType': 'json', 'numOfRows': 10, 'pageNo': 1,
-                                           'basDt': day.replace('-', ''), 'likeSrtnCd': ticker_norm}, timeout=KR_API_TIMEOUT)
+                                           'basDt': day.replace('-', ''), 'likeSrtnCd': ticker_norm}, timeout=30)
             r.raise_for_status(); df = normalize_payload(r.json(), ticker_norm)
             if df.empty:
                 last_err = RuntimeError(f'{ticker}: 응답 없음(휴장일이거나 API 설정 확인 필요)'); continue
@@ -566,262 +371,121 @@ def fetch_day(source, ticker, day):
             last_err = e
     raise last_err or RuntimeError(f'{ticker}: data.go.kr 조회 실패')
 
-def fetch_data_go_range(ticker, start_day, end_day):
-    """공공데이터포털에서 한 종목의 과거 구간을 한 번에 가져온다.
-    날짜별 반복 호출을 피하기 위한 역사 데이터 전용 경로."""
-    key = secret('DATA_GO_SERVICE_KEY')
-    if not key:
-        raise RuntimeError('DATA_GO_SERVICE_KEY 미설정')
-    ticker_norm = kr6(ticker)
-    frames = []
-    for url in (secret('DATA_GO_ETF_URL', DATA_GO_ETF_URL_DEFAULT), secret('DATA_GO_URL', DATA_GO_STOCK_URL_DEFAULT)):
-        try:
-            params = {
-                'serviceKey': key, 'resultType': 'json', 'numOfRows': 1000, 'pageNo': 1,
-                'beginBasDt': pd.Timestamp(start_day).strftime('%Y%m%d'),
-                'endBasDt': pd.Timestamp(end_day).strftime('%Y%m%d'),
-                'likeSrtnCd': ticker_norm,
-            }
-            r = requests.get(url, params=params, timeout=KR_API_TIMEOUT)
-            r.raise_for_status()
-            df = normalize_payload(r.json(), ticker_norm)
-            if not df.empty:
-                hit = df[(df['ticker'] == ticker_norm) & (df['date'] >= params['beginBasDt']) & (df['date'] <= params['endBasDt'])]
-                if not hit.empty:
-                    return hit.drop_duplicates('date').sort_values('date').reset_index(drop=True)
-        except Exception:
-            continue
-    return pd.DataFrame()
-
-
 def find_trading_day_price(source, ticker, target_date, max_back=10):
-    """지정 날짜의 가격만 찾는다. 휴장일이면 다른 날짜를 성공값으로 반환하지 않는다.
-    내부적으로만 API가 날짜 범위를 조금 넓혀 응답하는 경우를 허용한다."""
+    """target_date가 휴장일(주말·공휴일)이면 하루씩 앞으로 물러나며 실제 거래일 종가를 찾는다."""
     d = pd.Timestamp(target_date)
-    try:
-        x = fetch_day(source, str(ticker), d.strftime('%Y-%m-%d'))
-        if not x.empty:
-            hit = x[x['date'].eq(d.strftime('%Y%m%d'))]
-            if not hit.empty:
-                return hit.iloc[-1].to_dict()
-    except Exception:
-        pass
+    for _ in range(max_back):
+        try:
+            x = fetch_day(source, str(ticker), d.strftime('%Y-%m-%d'))
+            return x.iloc[-1].to_dict()
+        except Exception:
+            d -= pd.Timedelta(days=1)
     return None
 
-
-def find_month_last_trading_price(source, ticker, month_end, max_back=10):
-    """SMA용 과거 월 데이터 전용: 월말이 휴장일이면 같은 달 안에서 직전 거래일을 찾는다.
-    선택한 리밸런싱 기준일의 종가에는 절대 사용하지 않는다.
-    """
-    d = pd.Timestamp(month_end)
-    month = d.month
-    for back in range(max_back + 1):
-        cand = d - pd.Timedelta(days=back)
-        if cand.month != month:
-            break
-        row = find_trading_day_price(source, ticker, cand)
-        if row:
-            return row
-    return None
-
-
-def _month_end_freq():
-    try:
-        pd.date_range('2020-01-01', periods=2, freq='ME')
-        return 'ME'
-    except Exception:
-        return 'M'
-
-
-def _kr_cached_history(ticker):
-    cached = cache_get_prices(kr6(ticker), 'KR')
-    if cached.empty:
-        return cached
-    cached = cached.drop_duplicates('date').sort_values('date')
-    return cached
-
-
-def fetch_monthly(source, ticker, day, force_refresh=False):
-    """SMA/모멘텀용 월별 가격을 안정적으로 확보한다.
-
-    핵심 원칙
-    - 선택일 종가는 이 함수와 완전히 분리되어 정확한 선택일만 사용한다.
-    - SMA용 데이터는 최근 13개월의 각 월 마지막 거래일을 사용한다.
-    - 기존 캐시가 10개월 이상이면 재사용한다.
-    - 부족하면 18개월 범위 API를 먼저 다시 시도하고, 그래도 부족한 달만 단건 보완한다.
-    - API가 일부 기간만 반환해도 '7개월에서 끝'나지 않도록 missing month를 채운다.
-    """
+def fetch_monthly(source, ticker, day):
+    # 월말 날짜가 정확히 휴장일이면(전체 달의 ~30%가 주말) 그 달을 통째로 건너뛰어 prices가
+    # 10개월 미만으로 남고 SMA가 0이 되는 버그가 있었다 — find_trading_day_price로 이미 해결.
+    # 여기서는 "이미 지나간 달"의 데이터는 DB 캐시에서 재사용하고, 아직 진행 중인 이번 달만 새로 조회한다.
     ticker_norm = kr6(ticker)
-    end = pd.Timestamp(day)
-    # 13개 월별 관측치를 안정적으로 만들기 위해 18개월의 일별 원천 데이터를 확보
-    start = end - pd.DateOffset(months=18)
-    a, b = start.strftime('%Y%m%d'), end.strftime('%Y%m%d')
-
-    cached = _kr_cached_history(ticker_norm)
-    cached = cached[(cached['date'] >= a) & (cached['date'] <= b)] if not cached.empty else cached
-
-    def monthly_from(df):
-        if df is None or df.empty:
-            return pd.DataFrame(columns=['ticker','date','close'])
-        x = df.copy()
-        x['date_dt'] = pd.to_datetime(x['date'], format='%Y%m%d', errors='coerce')
-        x = x.dropna(subset=['date_dt']).sort_values('date_dt')
-        x = x[x['date_dt'] <= end]
-        if x.empty:
-            return pd.DataFrame(columns=['ticker','date','close'])
-        x['month'] = x['date_dt'].dt.to_period('M')
-        out = x.groupby('month', as_index=False).tail(1).copy()
-        out['ticker'] = ticker_norm
-        return out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
-
-    out = monthly_from(cached)
-    if not force_refresh and len(out) >= 13:
-        return out
-
-    # 범위 API는 18개월을 요청해 휴장일/누락 구간 때문에 13개월이 모자라는 현상을 방지
-    hist = fetch_data_go_range(ticker_norm, start, end)
-    if not hist.empty:
-        cache_put_prices(ticker_norm, hist.to_dict('records'), market='KR', source='data_go_range')
-        merged = pd.concat([cached, hist], ignore_index=True) if not cached.empty else hist.copy()
-        out = monthly_from(merged.drop_duplicates('date'))
-
-    if len(out) >= 13:
-        return out
-
-    # 그래도 부족하면 '없는 달'만 찾아 단건 조회한다. 전체 13개월을 무조건 반복 호출하지 않는다.
-    existing_months = set()
-    if not out.empty:
-        existing_months = set(pd.to_datetime(out['date'], format='%Y%m%d').dt.to_period('M').astype(str))
-    target_months = list(pd.period_range(end=end.to_period('M'), periods=13, freq='M'))
-    supplement = []
-    for period in target_months:
-        key = str(period)
-        if key in existing_months:
-            continue
-        month_end = period.to_timestamp(how='end').normalize()
-        row = find_month_last_trading_price(source, ticker_norm, month_end, max_back=12)
-        if row:
-            supplement.append(row)
-    if supplement:
-        cache_put_prices(ticker_norm, supplement, market='KR', source='data_go_single')
-        merged_parts = [x for x in [cached, hist if 'hist' in locals() else pd.DataFrame(), pd.DataFrame(supplement)] if x is not None and not x.empty]
-        merged = pd.concat(merged_parts, ignore_index=True) if merged_parts else pd.DataFrame()
-        out = monthly_from(merged.drop_duplicates('date'))
-    return out
-
-def fetch_daily_recent(source, ticker, day, days=120, force_refresh=False):
-    ticker_norm = kr6(ticker); end = pd.Timestamp(day); start = end - pd.Timedelta(days=days)
-    a = start.strftime('%Y%m%d'); b = end.strftime('%Y%m%d')
-    cached = _kr_cached_history(ticker_norm)
+    dates = pd.date_range(end=pd.Timestamp(day), periods=13, freq='ME')
+    cur_month = pd.Timestamp(day).strftime('%Y%m')
+    cached = cache_get_prices(ticker_norm)
+    cached_by_month = {}
     if not cached.empty:
-        cached = cached[(cached['date'] >= a) & (cached['date'] <= b)]
-    if force_refresh or cached.empty or len(cached) < max(20, int(days * 0.45)):
-        hist = fetch_data_go_range(ticker_norm, start, end)
-        if not hist.empty:
-            cache_put_prices(ticker_norm, hist.to_dict('records'), market='KR', source='data_go_range')
-            cached = hist
-    return cached.drop_duplicates('date').sort_values('date') if not cached.empty else pd.DataFrame()
+        tmp = cached.copy(); tmp['month'] = tmp['date'].str[:6]
+        cached_by_month = {m: g.sort_values('date').iloc[-1].to_dict() for m, g in tmp.groupby('month')}
+    rows = []; new_rows = []
+    for d in dates:
+        m = d.strftime('%Y%m')
+        if m != cur_month and m in cached_by_month:
+            c = cached_by_month[m]
+            rows.append({'date': c['date'], 'close': c['close']})
+        else:
+            row = find_trading_day_price(source, ticker, d)
+            if row:
+                rows.append({'date': row['date'], 'close': row['close']}); new_rows.append(row)
+    if new_rows: cache_put_prices(ticker_norm, new_rows)
+    return pd.DataFrame(rows)
+
+def fetch_daily_recent(source, ticker, day, days=120):
+    # 이미 캐시된 날짜는 건너뛰고, 캐시에 없는(주로 지난번 조회 이후 새로 생긴) 거래일만 조회한다.
+    # 첫 조회는 예전과 동일하게 느리지만, 두 번째 조회부터는 신규 거래일 수십 개 정도만 불러오면 된다.
+    ticker_norm = kr6(ticker)
+    end = pd.Timestamp(day); all_dates = [end - pd.Timedelta(days=i) for i in range(days, -1, -1)]
+    all_dates = [d for d in all_dates if d.weekday() < 5]
+    cached = cache_get_prices(ticker_norm)
+    have_dates = set(cached['date']) if not cached.empty else set()
+    new_rows = []
+    for d in all_dates:
+        if d.strftime('%Y%m%d') in have_dates: continue
+        try:
+            x = fetch_day(source, str(ticker), d.strftime('%Y-%m-%d')); new_rows.append(x.iloc[-1].to_dict())
+        except Exception:
+            pass
+    if new_rows: cache_put_prices(ticker_norm, new_rows)
+    start_str = (end - pd.Timedelta(days=days)).strftime('%Y%m%d'); end_str = end.strftime('%Y%m%d')
+    combined = pd.concat([cached, pd.DataFrame(new_rows)], ignore_index=True) if new_rows else cached
+    if combined.empty: return combined
+    combined = combined.drop_duplicates('date').sort_values('date')
+    return combined[(combined['date'] >= start_str) & (combined['date'] <= end_str)]
 
 # ---------- Yahoo Finance 가격 어댑터 (미국 상장 종목 + 벤치마크) ----------
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_yahoo_range(symbol, period1, period2, interval='1d', refresh_key=0):
-    """Yahoo chart API. query1 장애/차단 시 query2로 자동 재시도한다."""
-    last_err=None
-    params={'period1':int(period1),'period2':int(period2),'interval':interval,'events':'history','includeAdjustedClose':'true'}
-    for host in ('query1.finance.yahoo.com', 'query2.finance.yahoo.com'):
-        url=f'https://{host}/v8/finance/chart/{symbol}'
-        try:
-            r=requests.get(url,params=params,headers=YAHOO_HEADERS,timeout=YAHOO_API_TIMEOUT); r.raise_for_status()
-            chart=r.json().get('chart') or {}
-            result=chart.get('result')
-            if not result:
-                err=(chart.get('error') or {}).get('description') or '야후 응답 없음'
-                raise RuntimeError(f'{symbol}: {err}')
-            result=result[0]; ts=result.get('timestamp') or []; closes=(((result.get('indicators') or {}).get('quote') or [{}])[0]).get('close') or []; rows=[]
-            for t,c in zip(ts,closes):
-                if c is None: continue
-                try: close=float(c)
-                except (TypeError,ValueError): continue
-                if close>0: rows.append({'ticker':symbol,'date':pd.Timestamp(t,unit='s').strftime('%Y%m%d'),'close':close})
-            if not rows: raise RuntimeError(f'{symbol}: 유효한 종가가 없습니다.')
-            return pd.DataFrame(rows).drop_duplicates('date').sort_values('date').reset_index(drop=True)
-        except Exception as e:
-            last_err=e
-            continue
-    raise last_err or RuntimeError(f'{symbol}: Yahoo 조회 실패')
+def fetch_yahoo_range(symbol, period1, period2, interval='1d'):
+    url = f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}'
+    r = requests.get(url, params={'period1': int(period1), 'period2': int(period2), 'interval': interval}, headers=YAHOO_HEADERS, timeout=20)
+    r.raise_for_status(); result = (r.json().get('chart') or {}).get('result')
+    if not result: raise RuntimeError(f'{symbol}: 야후 응답 없음')
+    result = result[0]; ts = result.get('timestamp') or []
+    closes = ((result.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+    rows = [{'ticker': symbol, 'date': pd.Timestamp(t, unit='s').strftime('%Y%m%d'), 'close': float(c)} for t, c in zip(ts, closes) if c is not None]
+    return pd.DataFrame(rows)
 
-def _refresh_key(force_refresh=False): return int(pd.Timestamp.now().timestamp()) if force_refresh else 0
+def fetch_yahoo_day(symbol, day):
+    end = pd.Timestamp(day) + pd.Timedelta(days=2); start = end - pd.Timedelta(days=12)
+    df = fetch_yahoo_range(symbol, start.timestamp(), end.timestamp(), '1d')
+    if df.empty: raise RuntimeError(f'{symbol}: 종가 없음')
+    target = pd.Timestamp(day).strftime('%Y%m%d'); before = df[df['date'] <= target]
+    return before.iloc[[-1]] if not before.empty else df.iloc[[-1]]
 
-def fetch_yahoo_day(symbol, day, force_refresh=False):
-    target=pd.Timestamp(day).strftime('%Y%m%d'); cached=cache_get_prices(symbol,'US')
-    if not cached.empty and not force_refresh:
-        hit=cached[cached['date'].eq(target)]
-        if not hit.empty: return pd.DataFrame([{'ticker':symbol,'date':target,'close':float(hit.iloc[0]['close'])}])
-    start=pd.Timestamp(day)-pd.Timedelta(days=7); end=pd.Timestamp(day)+pd.Timedelta(days=2)
-    df=fetch_yahoo_range(symbol,start.timestamp(),end.timestamp(),'1d',refresh_key=_refresh_key(force_refresh)); exact=df[df['date'].eq(target)]
-    if exact.empty: raise RuntimeError(f'{symbol}: {day} 종가 데이터 없음(해당 날짜 휴장일 또는 Yahoo 데이터 없음)')
-    cache_put_prices(symbol,exact.to_dict('records'),market='US',source='Yahoo'); return exact.iloc[[-1]]
+def fetch_yahoo_monthly(symbol, day):
+    end = pd.Timestamp(day) + pd.Timedelta(days=2); start = end - pd.Timedelta(days=430)
+    return fetch_yahoo_range(symbol, start.timestamp(), end.timestamp(), '1mo')
 
-def fetch_yahoo_daily_history(symbol, day, days=430, force_refresh=False):
-    end=pd.Timestamp(day); start=end-pd.Timedelta(days=days); a=start.strftime('%Y%m%d'); b=end.strftime('%Y%m%d'); cached=cache_get_prices(symbol,'US')
-    cached=cached[(cached['date']>=a)&(cached['date']<=b)] if not cached.empty else cached
-    if force_refresh or cached.empty or cached['date'].min()>a or cached['date'].max()<b:
-        df=fetch_yahoo_range(symbol,start.timestamp(),(end+pd.Timedelta(days=2)).timestamp(),'1d',refresh_key=_refresh_key(force_refresh))
-        if not df.empty: cache_put_prices(symbol,df.to_dict('records'),market='US',source='Yahoo')
-        cached=cache_get_prices(symbol,'US'); cached=cached[(cached['date']>=a)&(cached['date']<=b)] if not cached.empty else cached
-    return cached
-
-def fetch_yahoo_monthly(symbol, day, force_refresh=False):
-    daily=fetch_yahoo_daily_history(symbol,day,430,force_refresh)
-    if daily.empty: return daily
-    x=daily.copy(); x['date_dt']=pd.to_datetime(x['date'],format='%Y%m%d',errors='coerce'); x=x.dropna(subset=['date_dt']).sort_values('date_dt'); x['month']=x['date_dt'].dt.to_period('M')
-    out=x.groupby('month',as_index=False).tail(1).copy(); out['ticker']=str(symbol); return out[['ticker','date','close']].sort_values('date').tail(13).reset_index(drop=True)
-
-def fetch_yahoo_daily_recent(symbol, day, days=120, force_refresh=False): return fetch_yahoo_daily_history(symbol,day,days,force_refresh)
+def fetch_yahoo_daily_recent(symbol, day, days=120):
+    end = pd.Timestamp(day) + pd.Timedelta(days=2); start = end - pd.Timedelta(days=days + 10)
+    return fetch_yahoo_range(symbol, start.timestamp(), end.timestamp(), '1d')
 
 # ---------- 시장 라우팅 (KR -> KRX/공공데이터, US -> Yahoo) ----------
-def fetch_price_day(market, source, ticker, day, force_refresh=False):
-    if market == 'US':
-        return fetch_yahoo_day(ticker, day, force_refresh=force_refresh)
-    ticker_norm = kr6(ticker); target = pd.Timestamp(day).strftime('%Y%m%d')
-    if not force_refresh:
-        cached = cache_get_prices(ticker_norm, 'KR')
-        if not cached.empty:
-            hit = cached[cached['date'].eq(target)]
-            if not hit.empty:
-                return hit[['ticker','date','close']].tail(1)
-    hit = fetch_day(source, ticker_norm, day)
-    cache_put_prices(ticker_norm, hit.to_dict('records'), market='KR', source=source)
-    return hit
+def fetch_price_day(market, source, ticker, day):
+    return fetch_yahoo_day(ticker, day) if market == 'US' else fetch_day(source, ticker, day)
 
-def fetch_price_monthly(market, source, ticker, day, force_refresh=False):
-    return (
-        fetch_yahoo_monthly(ticker, day, force_refresh=force_refresh)
-        if market == 'US'
-        else fetch_monthly(source, ticker, day, force_refresh=force_refresh)
-    )
+def fetch_price_monthly(market, source, ticker, day):
+    return fetch_yahoo_monthly(ticker, day) if market == 'US' else fetch_monthly(source, ticker, day)
 
-def fetch_price_daily_recent(market, source, ticker, day, days=120, force_refresh=False):
-    return (
-        fetch_yahoo_daily_recent(ticker, day, days, force_refresh=force_refresh)
-        if market == 'US'
-        else fetch_daily_recent(source, ticker, day, days, force_refresh=force_refresh)
-    )
+def fetch_price_daily_recent(market, source, ticker, day, days=120):
+    return fetch_yahoo_daily_recent(ticker, day, days) if market == 'US' else fetch_daily_recent(source, ticker, day, days)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_usd_krw_rate(day=None, force_refresh=False):
-    target_day=pd.Timestamp(day if day is not None else date.today()).strftime('%Y-%m-%d'); target=pd.Timestamp(target_day).strftime('%Y%m%d'); init_db(); con=sqlite3.connect(DB_PATH)
-    try: row=con.execute('SELECT rate FROM fx_cache WHERE date=?',(target,)).fetchone()
-    finally: con.close()
-    if row is not None and not force_refresh: return float(row[0])
+def get_usd_krw_rate():
+    """미국 상장 종목 평가액을 원화로 환산하기 위한 환율. 별도 API가 필요 없이 이미 쓰고 있는
+    야후 파이낸스의 USD/KRW 티커(KRW=X)를 그대로 재사용한다. 실패하면 마지막으로 성공했던
+    환율을 DB에서 불러와 대체값으로 쓴다(완전히 실패해 0으로 처리되는 것을 방지)."""
     try:
-        start=pd.Timestamp(target_day)-pd.Timedelta(days=7); end=pd.Timestamp(target_day)+pd.Timedelta(days=2); df=fetch_yahoo_range('KRW=X',start.timestamp(),end.timestamp(),'1d',refresh_key=_refresh_key(force_refresh)); exact=df[df['date'].eq(target)]
-        if exact.empty: return None
-        rate=float(exact.iloc[-1]['close']); con=sqlite3.connect(DB_PATH)
-        try: con.execute('INSERT OR REPLACE INTO fx_cache(date,rate,source) VALUES(?,?,?)',(target,rate,'Yahoo KRW=X')); con.commit()
-        finally: con.close()
-        return rate
-    except Exception: return None
+        end = pd.Timestamp.now(); start = end - pd.Timedelta(days=10)
+        df = fetch_yahoo_range('KRW=X', start.timestamp(), end.timestamp(), '1d')
+        if not df.empty:
+            rate = float(df.sort_values('date').iloc[-1]['close'])
+            try: put_state('last_fx_rate', {'rate': rate, 'date': date.today().isoformat()})
+            except Exception: pass
+            return rate
+    except Exception:
+        pass
+    try:
+        cached = get_state('last_fx_rate')
+        return cached.get('rate')
+    except Exception:
+        return None
 
 def drawdown_from_peak(closes):
     closes = [c for c in closes if n(c) > 0]
@@ -840,23 +504,27 @@ def calc_prices(a):
     mom = (prices[-1] / prices[-13] - 1) if len(prices) >= 13 and prices[-13] else None
     return close, sma, mom
 
-def asset_value(a, fx_rate=None):
-    shares=n(a.get('shares'))
-    if str(a.get('ticker'))=='CASH': return shares
-    value=shares*n(a.get('close'))
-    if a.get('market')=='US':
-        fx=fx_rate if fx_rate is not None else get_usd_krw_rate()
-        return value*fx if fx else 0.0
+def asset_value(a):
+    """현금(CASH) 행은 '보유수량'을 원화 금액 그 자체로 취급한다(종가=1).
+    미국 상장 종목(market='US')은 종가가 USD이므로 현재 환율을 곱해 원화로 환산한다.
+    SMA/12개월 모멘텀 등 신호 계산은 원래 통화(USD) 기준 종가로 그대로 하고,
+    포트폴리오 합산·목표비중 비교에 쓰이는 '평가액'만 원화로 바꾼다."""
+    shares = n(a.get('shares'))
+    if str(a.get('ticker')) == 'CASH': return shares
+    value = shares * n(a.get('close'))
+    if a.get('market') == 'US':
+        fx = get_usd_krw_rate()
+        return value * fx if fx else 0.0
     return value
 
-def usd_krw_rate_missing(assets_df, day=None):
-    has_us=(assets_df['market']=='US').any() if not assets_df.empty else False
-    return has_us and not get_usd_krw_rate(day)
+def usd_krw_rate_missing(assets_df):
+    """미국 종목을 보유 중인데 환율을 못 가져온 경우 경고를 띄우기 위한 체크."""
+    has_us = (assets_df['market'] == 'US').any() if not assets_df.empty else False
+    return has_us and not get_usd_krw_rate()
 
 def portfolio_perf(rows):
     x = sorted([{'date': str(r['date']), 'value': n(r['value'])} for r in rows if n(r.get('value')) > 0], key=lambda z: z['date'])
     if len(x) < 2: return None
-    if n(x[0]['value']) <= 0: return None  # 0원 시작이면 CAGR이 무한대/NaN이 되는 것 방지
     days = max(1, (pd.Timestamp(x[-1]['date']) - pd.Timestamp(x[0]['date'])).days)
     cagr = (x[-1]['value'] / x[0]['value']) ** (365 / days) - 1
     peak = 0; mdd = 0
@@ -871,10 +539,6 @@ def calc_xirr(equity, cashflows):
     flows.sort(key=lambda x: x['date']); d0 = pd.Timestamp(flows[0]['date'])
     def f(r): return sum(x['amount'] / (1 + r) ** ((pd.Timestamp(x['date']) - d0).days / 365) for x in flows)
     lo, hi = -0.9999, 10
-    flo, fhi = f(lo), f(hi)
-    # 구간 안에 해가 없으면(전부 출금·극단적 수익 등) 의미 없는 값 대신 None 반환
-    if (flo > 0) == (fhi > 0) and flo != 0 and fhi != 0:
-        return None
     for _ in range(120):
         mid = (lo + hi) / 2
         if f(mid) > 0: lo = mid
@@ -884,13 +548,6 @@ def calc_xirr(equity, cashflows):
 def w(x): return f'{n(x):,.0f}원'
 def p(x): return f'{x * 100:.2f}%'
 def num0(x): return f'{n(x):,.0f}'
-
-def toast(msg):
-    """구버전 Streamlit에는 없는 st.toast를 안전하게 감싼다."""
-    try:
-        st.toast(msg)
-    except Exception:
-        pass
 
 # ---------- 전략 레지스트리 ----------
 def get_strategies():
@@ -974,31 +631,9 @@ def compute_category_breakdown(assets_df, active_only=True):
 # 백업/복원에 포함해야 하는 모든 kv 키. 새 상태를 추가할 때마다 여기 한 곳만 늘리면
 # 백업 JSON이 저절로 최신 스키마를 따라가서, "백업엔 있는데 복원엔 빠졌다" 같은 실수를 막는다.
 ALL_KV_KEYS = ['assets', 'history', 'equity', 'cashflows', 'benchmarks', 'strategies', 'category_targets', 'executions']
-BACKUP_SCHEMA_VERSION = 2
-PRICE_FIELDS_EXCLUDED_FROM_BACKUP = {'close', 'prices'}
-
-def strip_asset_price_data(records):
-    """JSON 백업/복원에서는 일자별 시장가격을 완전히 분리한다.
-    보유수량·전략·종목 구성·목표비중 등 포트폴리오 설정은 그대로 보존한다.
-    """
-    if not isinstance(records, list):
-        return records
-    clean=[]
-    for row in records:
-        if not isinstance(row, dict):
-            continue
-        clean.append({k:v for k,v in row.items() if k not in PRICE_FIELDS_EXCLUDED_FROM_BACKUP})
-    return clean
 
 def export_backup_dict():
-    data = {k: get_state(k) for k in ALL_KV_KEYS}
-    data['assets'] = strip_asset_price_data(data.get('assets', []))
-    data['_backup_meta'] = {
-        'schema_version': BACKUP_SCHEMA_VERSION,
-        'asset_price_data_included': False,
-        'excluded_asset_fields': sorted(PRICE_FIELDS_EXCLUDED_FROM_BACKUP),
-    }
-    return data
+    return {k: get_state(k) for k in ALL_KV_KEYS}
 
 def write_auto_backup():
     """로컬 실행 중 DB 파일이 손상되거나 실수로 초기화됐을 때를 대비한 보조 안전망.
@@ -1129,7 +764,6 @@ with st.sidebar:
     page = st.radio('메뉴', ['Action Plan', '포트폴리오 대시보드', '전략 구성', '리밸런싱 히스토리', '성과 비교'])
     st.divider()
     device_mode = st.radio('화면 모드', ['자동(반응형)', '💻 PC', '📱 모바일'], index=0, key='device_mode', horizontal=True)
-    dark_mode = st.toggle('🌙 다크모드', value=False, key='dark_mode', help='눈이 편한 어두운 테마로 전환합니다.')
     st.caption('자동주문 없음 · 지정일 실행만 저장')
 
 # '자동' 모드도 CSS 미디어쿼리로 실제 폰 브라우저 폭에서는 반응형으로 줄어든다.
@@ -1138,47 +772,26 @@ MOBILE = device_mode == '📱 모바일'
 st.markdown("""
 <style>
 :root{
-  --bg:#f6f7f9; --surface:#ffffff; --surface-2:#f0f2f5; --border:#e5e7eb;
-  --text:#111827; --muted:#6b7280; --primary:#2563eb; --primary-soft:#eff6ff;
-  --success:#16a34a; --success-soft:#f0fdf4; --danger:#dc2626; --danger-soft:#fef2f2;
-  --warning:#d97706; --warning-soft:#fffbeb; --radius:16px;
+  --sage:#8DA377; --sage-dark:#6E8A5B; --sage-tint:rgba(141,163,119,0.14);
+  --terracotta:#C1795A; --terracotta-dark:#A15E42; --terracotta-tint:rgba(193,121,90,0.14);
+  --olive:#7D7A4F; --olive-dark:#5F5D3C;
+  --beige:#F4EFE6; --beige-deep:#EAE1D0; --ink:#4A4638;
 }
-.stApp{background:var(--bg); color:var(--text);}
-.block-container{max-width:1220px !important; padding-top:1.2rem !important; padding-bottom:3rem !important;}
-section[data-testid="stSidebar"]{background:#111827 !important; border-right:1px solid #1f2937;}
-section[data-testid="stSidebar"] *{color:#e5e7eb !important;}
-section[data-testid="stSidebar"] .stRadio label{padding:.28rem 0;}
-h1,h2,h3,h4{color:var(--text) !important; letter-spacing:-.025em;}
-h1{font-size:2rem !important; font-weight:800 !important;}
-h2{font-size:1.45rem !important; font-weight:750 !important;}
-h3{font-size:1.12rem !important; font-weight:700 !important;}
-[data-testid="stMetric"]{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1rem 1.1rem; box-shadow:0 1px 2px rgba(0,0,0,.03);}
-[data-testid="stMetricLabel"]{color:var(--muted) !important; font-size:.82rem !important;}
-[data-testid="stMetricValue"]{color:var(--text) !important; font-weight:800 !important;}
-.stButton>button,.stDownloadButton>button{border-radius:10px !important; min-height:2.65rem; font-weight:650; border:1px solid var(--border); background:var(--surface); color:var(--text); transition:.15s ease;}
-.stButton>button:hover,.stDownloadButton>button:hover{border-color:#cbd5e1; box-shadow:0 3px 10px rgba(15,23,42,.08);}
-.stButton button[kind="primary"]{background:var(--primary) !important; border-color:var(--primary) !important; color:white !important;}
-.stTabs [aria-selected="true"]{color:var(--primary) !important; border-bottom-color:var(--primary) !important;}
-div[data-testid="stExpander"]{background:var(--surface); border:1px solid var(--border); border-radius:14px; overflow:hidden;}
-div[data-testid="stDataFrame"], div[data-testid="stTable"]{border:1px solid var(--border); border-radius:12px; overflow:hidden;}
-div[data-baseweb="select"]>div, div[data-baseweb="input"]>div, textarea{border-radius:10px !important; border-color:var(--border) !important; background:var(--surface) !important;}
-hr{border-color:var(--border) !important;}
-.app-hero{background:linear-gradient(135deg,#111827 0%,#1f2937 55%,#2563eb 140%); color:white; border-radius:22px; padding:24px 26px; margin:0 0 20px 0; box-shadow:0 10px 30px rgba(15,23,42,.10);}
-.app-hero .eyebrow{font-size:.75rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; opacity:.68;}
-.app-hero .title{font-size:1.85rem; font-weight:800; letter-spacing:-.035em; margin:.25rem 0 .35rem;}
-.app-hero .sub{font-size:.9rem; color:#cbd5e1;}
-.ui-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px; box-shadow:0 1px 2px rgba(0,0,0,.03);}
-.status-ok{background:var(--success-soft); border-color:#bbf7d0;}
-.status-warn{background:var(--warning-soft); border-color:#fde68a;}
-.status-bad{background:var(--danger-soft); border-color:#fecaca;}
-@media(max-width:640px){
- .block-container{padding:.7rem .65rem 2.5rem !important;}
- h1{font-size:1.5rem !important;} h2{font-size:1.28rem !important;}
- [data-testid="stMetric"]{padding:.72rem .75rem;}
- [data-testid="stMetricValue"]{font-size:1.2rem !important;}
- .app-hero{padding:18px 17px; border-radius:16px;}
- .app-hero .title{font-size:1.35rem;}
- .stButton>button,.stDownloadButton>button{width:100%;}
+.stApp{background-color:var(--beige);}
+.block-container{padding-top:1.2rem;padding-bottom:2rem;}
+h1, h2, h3, h4{color:var(--olive-dark) !important;}
+div[data-testid="stMetricValue"]{color:var(--olive-dark) !important;}
+.stButton button[kind="primary"]{background-color:var(--sage-dark) !important;border-color:var(--sage-dark) !important;}
+.stButton button[kind="secondary"], .stButton button:not([kind]){border-color:var(--beige-deep) !important;color:var(--ink) !important;}
+div[data-testid="stExpander"]{background-color:rgba(255,255,255,0.4); border-color:var(--beige-deep) !important;}
+.stTabs [aria-selected="true"]{color:var(--sage-dark) !important; border-bottom-color:var(--sage-dark) !important;}
+@media (max-width: 640px){
+  .block-container{padding:0.6rem 0.7rem 2rem !important;}
+  div[data-testid="stMetricValue"]{font-size:1.3rem !important;}
+  div[data-testid="stMetricLabel"]{font-size:0.8rem !important;}
+  .stButton button{font-size:1rem !important;padding:0.55rem 0.9rem !important;width:100%;}
+  div[data-testid="stDataFrame"]{font-size:0.78rem;}
+  h1{font-size:1.35rem !important;} h3{font-size:1.05rem !important;} h4{font-size:0.95rem !important;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1189,21 +802,6 @@ if MOBILE:
     .stButton button{font-size:1rem !important;padding:0.55rem 0.9rem !important;width:100%;}
     </style>
     """, unsafe_allow_html=True)
-
-DARK = dark_mode
-if DARK:
-    st.markdown("""<style>
-    :root{--sage:#A9C08F;--sage-dark:#B7CF9E;--sage-tint:rgba(169,192,143,0.16);--terracotta:#D99A7C;--terracotta-dark:#E0A88C;--terracotta-tint:rgba(217,154,124,0.16);--olive:#C9C9A8;--olive-dark:#D6D6B8;--beige:#1F2023;--beige-deep:#2A2B30;--ink:#E8E6DF;}
-    .stApp{background-color:var(--beige);}
-    div[data-testid="stSidebar"]{background-color:#26272B !important;}
-    div[data-testid="stMetric"],div[data-testid="stMetricLabel"],div[data-testid="stMetricValue"]{background-color:var(--beige-deep) !important;color:var(--ink) !important;}
-    div[data-testid="stMetricValue"]{color:var(--olive-dark) !important;}
-    div[data-testid="stExpander"],div[data-testid="stVerticalBlockBorderWrapper"]{background-color:var(--beige-deep) !important;border-color:#3A3B41 !important;}
-    .stButton button:not([kind="primary"]){background-color:var(--beige-deep) !important;color:var(--ink) !important;border-color:#3A3B41 !important;}
-    div[data-testid="stHeader"]{background:transparent !important;}
-    input,textarea,div[data-baseweb="select"]>div{background-color:var(--beige-deep) !important;color:var(--ink) !important;}
-    .stMarkdown p, .stMarkdown li{color:var(--ink) !important;}
-    </style>""", unsafe_allow_html=True)
 
 def mobile_card(title, lines, tone=None):
     """넓은 표 대신 쓰는 세로 카드 한 장. tone에 따라 세이지그린(양호)/테라코타(주의) 테두리."""
@@ -1218,67 +816,7 @@ def mobile_card(title, lines, tone=None):
         unsafe_allow_html=True,
     )
 
-st.markdown(f'''<div class="app-hero"><div class="eyebrow">PORTFOLIO REBALANCING</div><div class="title">자산배분 리밸런싱</div><div class="sub">지정일 종가 · 10개월 SMA · 12개월 모멘텀 · CAGR / MDD / IRR · v{APP_VERSION}</div></div>''', unsafe_allow_html=True)
-
-
-def strategy_rebalance_status(plan_group):
-    """전략별 리밸런싱 필요도를 계산한다. 구버전/빈 계획표에도 안전하게 동작한다."""
-    if plan_group is None or plan_group.empty:
-        return '⚪ 데이터 없음', '계획 데이터가 없습니다.'
-    required = {'매매액(+매수/-매도)', '현재금액', '비고'}
-    missing = required - set(plan_group.columns)
-    if missing:
-        return '⚠️ 데이터 확인', f"계획표에 필요한 열이 없습니다: {', '.join(sorted(missing))}"
-    trades = pd.to_numeric(plan_group['매매액(+매수/-매도)'], errors='coerce').fillna(0)
-    current = pd.to_numeric(plan_group['현재금액'], errors='coerce').fillna(0)
-    if not trades.notna().any() or not current.notna().any():
-        return '⚠️ 데이터 확인', '계획 금액을 계산할 수 없습니다.'
-    total_cur = float(current.sum())
-    max_trade = float(trades.abs().max()) if len(trades) else 0.0
-    ratio = max_trade / float(total_cur) if total_cur > 0 else 0.0
-    notes = ' '.join(plan_group['비고'].fillna('').astype(str).tolist())
-    if '데이터부족' in notes or '데이터 없음' in notes:
-        return '⚠️ 데이터 확인', '가격/SMA 데이터가 부족합니다.'
-    if ratio >= 0.10:
-        return '🔴 리밸런싱 필요', f'최대 조정액이 현재 자산의 {ratio:.1%}입니다.'
-    if ratio >= 0.03:
-        return '🟡 점검 권장', f'최대 조정액이 현재 자산의 {ratio:.1%}입니다.'
-    return '🟢 정상', '목표비중과의 괴리가 크지 않습니다.'
-
-
-def render_target_weight_bar(current_pct, target_pct, height=22):
-    """목표까지는 초록, 목표 미달분은 파랑, 초과분은 빨강으로 표시하는 비중 막대."""
-    cur = max(0.0, float(current_pct or 0))
-    tgt = max(0.0, float(target_pct or 0))
-    scale = max(100.0, cur, tgt, 1.0)
-    if cur <= tgt:
-        green = cur / scale * 100
-        blue = (tgt - cur) / scale * 100
-        red = 0.0
-    else:
-        green = tgt / scale * 100
-        blue = 0.0
-        red = (cur - tgt) / scale * 100
-    parts = []
-    if green > 0: parts.append(f'<div style="width:{green:.4f}%;background:#6f8f72"></div>')
-    if blue > 0: parts.append(f'<div style="width:{blue:.4f}%;background:#6b8fc4"></div>')
-    if red > 0: parts.append(f'<div style="width:{red:.4f}%;background:#c96b5b"></div>')
-    bar = ''.join(parts) or '<div style="width:100%;background:#e5e0d5"></div>'
-    st.markdown(
-        f'<div style="height:{height}px;display:flex;overflow:hidden;border-radius:6px;background:#eee9df;">{bar}</div>'
-        f'<div style="font-size:.78rem;color:#6b665b;margin-top:4px;">현재 {cur:.1f}% · 목표 {tgt:.1f}% · '
-        f'<span style="color:#6f8f72;font-weight:700">초록=목표 충족</span> · '
-        f'<span style="color:#c96b5b;font-weight:700">빨강=초과</span> · '
-        f'<span style="color:#6b8fc4;font-weight:700">파랑=미달</span></div>', unsafe_allow_html=True)
-
-def render_mobile_target_weight_card(name, current_pct, target_pct, amount):
-    cur=max(0.0,float(current_pct or 0)); tgt=max(0.0,float(target_pct or 0)); scale=max(100.0,cur,tgt,1.0)
-    green=min(cur,tgt)/scale*100; blue=max(tgt-cur,0)/scale*100; red=max(cur-tgt,0)/scale*100
-    seg=[]
-    if green: seg.append(f'<div style="width:{green:.4f}%;background:#16a34a"></div>')
-    if blue: seg.append(f'<div style="width:{blue:.4f}%;background:#3b82f6"></div>')
-    if red: seg.append(f'<div style="width:{red:.4f}%;background:#ef4444"></div>')
-    st.markdown(f'<div class="weight-card"><div class="weight-head"><span>{name}</span><span>{cur:.1f}%</span></div><div class="weight-meta">{w(amount)} · 목표 {tgt:.1f}% · 괴리 {cur-tgt:+.1f}%p</div><div class="weight-bar">{"".join(seg)}</div><div class="weight-legend"><span><i class="weight-dot" style="background:#16a34a"></i>목표 충족</span><span><i class="weight-dot" style="background:#3b82f6"></i>목표 미달</span><span><i class="weight-dot" style="background:#ef4444"></i>목표 초과</span></div></div>', unsafe_allow_html=True)
+st.title('자산배분 리밸런싱 도우미'); st.caption('한국/미국 상장 종목 · 10개월 SMA · 12개월 모멘텀 · CAGR/MDD/IRR')
 
 if page == 'Action Plan':
     info = last_snapshot_info()
@@ -1295,47 +833,20 @@ if page == 'Action Plan':
     ap_assets = assets[assets['strategy'].isin(active_codes)]
     c1, c2 = st.columns(2)
     run_date = c1.date_input('리밸런싱 기준일', date.today())
-    source = 'krx'  # 한국은 KRX 우선 → 공공데이터 자동 폴백. 사용자가 소스를 고를 필요가 없도록 통일.
-    # 기준일이 바뀌면 이전 기준일의 조회 결과(실패 목록·트리거 판정)는 무효 → 자동 정리
-    if st.session_state.get('last_run_date') != run_date.isoformat():
-        st.session_state.pop('failed_tickers', None)
-        st.session_state.pop('trigger_dd', None)
-        st.session_state.last_run_date = run_date.isoformat()
-        st.session_state.pop('run_fx_rate', None)
-        st.session_state.pop('price_fetch_attempted', None)
-    # 요약 카드: 활성 전략 총자산 · 마지막 저장 · 이번 달 말까지 남은 일수(월말 리밸런싱 워크플로우용)
-    _g, _, _ = compute_portfolio_snapshot(assets, active_only=True)
-    _sc1, _sc2, _sc3 = st.columns(3)
-    _sc1.metric('활성 전략 총자산', w(_g))
-    _sc2.metric('마지막 히스토리 저장', info[0] if info else '없음')
-    _sc3.metric('이번 달 말까지', f'{calendar.monthrange(date.today().year, date.today().month)[1] - date.today().day}일')
-    st.info('종가를 불러온 뒤 저장 버튼을 눌러야 히스토리(모든 전략 구성 스냅샷)가 저장됩니다. 미국 상장 종목은 선택한 조회일자의 Yahoo 종가와 같은 날짜의 USD/KRW 환율로 원화 환산합니다.')
-    if st.session_state.get('price_fetch_attempted') and usd_krw_rate_missing(ap_assets, run_date):
-        st.warning('미국 상장 종목의 선택 조회일자 USD/KRW 환율을 가져오지 못했습니다. 해당 종목 평가액이 0으로 계산될 수 있습니다.')
+    source = c2.selectbox('국내 종목 가격 소스', ['krx', 'data_go'], index=1, format_func=lambda x: 'KRX Open API' if x == 'krx' else '공공데이터포털')
+    st.info('종가를 불러온 뒤 저장 버튼을 눌러야 히스토리(모든 전략 구성 스냅샷)가 저장됩니다. 미국 상장 종목은 야후 파이낸스로 자동 조회 후 현재 환율로 원화 환산합니다.')
+    if usd_krw_rate_missing(ap_assets):
+        st.warning('미국 상장 종목을 보유 중인데 환율(USD/KRW)을 가져오지 못했습니다. 해당 종목 평가액이 0으로 계산될 수 있습니다.')
 
-    pc1, pc2 = st.columns(2)
-    fetch_mode = pc1.radio('가격 조회 방식', ['빠른 조회(캐시 우선)', '강제 새로고침(캐시 무시)'], horizontal=False)
-    force_refresh_prices = fetch_mode.startswith('강제')
-    fetch_clicked = pc2.button('🔄 가격 조회 실행', type='primary', use_container_width=True)
-
-    if fetch_clicked:
-        st.session_state.price_fetch_attempted = True
+    if st.button('선택일 종가·13개월 월별 데이터 불러오기', type='primary'):
         ok = 0; errors = []; failed = []
-        run_fx_rate = None
-        if (ap_assets['market'] == 'US').any():
-            run_fx_rate = get_usd_krw_rate(run_date.isoformat(), force_refresh=force_refresh_prices)
-            st.session_state.run_fx_rate = run_fx_rate
-            if run_fx_rate is None:
-                errors.append(f'{run_date}: USD/KRW 환율 데이터 없음')
-        _todo = [(i, a) for i, a in ap_assets.iterrows() if str(a['ticker']).strip() and str(a['ticker']).strip() != 'CASH']
-        _prog = st.progress(0.0, text='가격 조회 준비 중...')
-        for _n, (i, a) in enumerate(_todo, 1):
+        for i, a in ap_assets.iterrows():
             t = str(a['ticker']).strip()
+            if not t or t == 'CASH': continue
             mkt = a['market'] or 'KR'
-            _prog.progress(min(1.0, (_n - 1) / max(1, len(_todo))), text=f'가격 조회 중... ({_n}/{len(_todo)}) · {t}')
             try:
-                daydf = fetch_price_day(mkt, source, t, run_date.isoformat(), force_refresh=force_refresh_prices); row = daydf.iloc[-1]; assets.at[i, 'close'] = row['close']
-                hist = fetch_price_monthly(mkt, source, t, run_date.isoformat(), force_refresh=force_refresh_prices)
+                daydf = fetch_price_day(mkt, source, t, run_date.isoformat()); row = daydf.iloc[-1]; assets.at[i, 'close'] = row['close']
+                hist = fetch_price_monthly(mkt, source, t, run_date.isoformat())
                 prices = hist.sort_values('date')['close'].tolist() if not hist.empty else [row['close']]
                 assets.at[i, 'prices'] = prices
                 ok += 1
@@ -1343,21 +854,13 @@ if page == 'Action Plan':
                     errors.append(f"{t}: 월별 데이터가 {len(prices)}개뿐이라 SMA10 계산 불가"); failed.append(i)
             except Exception as e:
                 errors.append(f'{t}: {e}'); failed.append(i)
-            _prog.progress(min(1.0, _n / max(1, len(_todo))), text=f'가격 조회 중... ({_n}/{len(_todo)})')
-        _prog.empty()
         # ISA(-10%)·SSO(-15% 이상) 트리거 판정용 최근 영업일 고점대비 하락률 (월말 데이터만으론 월중 고점을 놓침)
         trigger_dd = {}
         signal_rows = ap_assets[(ap_assets['strategy'].eq('ISA')) | ((ap_assets['strategy'].eq('SSO')) & (ap_assets['role'].eq('S&P500 기준')))]
         for strat, st_ticker, mkt in zip(signal_rows['strategy'], signal_rows['signal_ticker'], signal_rows['market']):
-            if strat == 'ISA':
-                # ISA 트리거는 실제 매매 ETF가 아니라 미국 상장 QQQ의 고점 대비 하락률을 사용한다.
-                st_ticker, signal_market = 'QQQ', 'US'
-            else:
-                signal_market = mkt
-            if not st_ticker or st_ticker == 'CASH':
-                continue
+            if not st_ticker or st_ticker == 'CASH': continue
             try:
-                d = fetch_price_daily_recent(signal_market, source, st_ticker, run_date.isoformat(), 120, force_refresh=force_refresh_prices)
+                d = fetch_price_daily_recent(mkt, source, st_ticker, run_date.isoformat(), 120)
                 trigger_dd[strat] = drawdown_from_peak(d.sort_values('date')['close'].tolist()) if not d.empty else None
             except Exception as e:
                 errors.append(f'{st_ticker}(트리거): {e}'); trigger_dd[strat] = None
@@ -1387,16 +890,12 @@ if page == 'Action Plan':
                 with cc2:
                     st.write('')
                     if st.button('캐시 지우고 재조회', key=f'retry_cache_{i}'):
-                        mkt = a['market'] or 'KR'
-                        cache_clear_prices_for(a['ticker'], mkt)
-                        if mkt == 'US':
-                            cache_clear_fx()
+                        cache_clear_prices_for(a['ticker'])
                         try:
-                            if mkt == 'US':
-                                st.session_state.run_fx_rate = get_usd_krw_rate(run_date.isoformat(), force_refresh=True)
-                            daydf = fetch_price_day(mkt, source, a['ticker'], run_date.isoformat(), force_refresh=True); row2 = daydf.iloc[-1]
+                            mkt = a['market'] or 'KR'
+                            daydf = fetch_price_day(mkt, source, a['ticker'], run_date.isoformat()); row2 = daydf.iloc[-1]
                             assets.at[i, 'close'] = row2['close']
-                            hist2 = fetch_price_monthly(mkt, source, a['ticker'], run_date.isoformat(), force_refresh=True)
+                            hist2 = fetch_price_monthly(mkt, source, a['ticker'], run_date.isoformat())
                             prices2 = hist2.sort_values('date')['close'].tolist() if not hist2.empty else [row2['close']]
                             assets.at[i, 'prices'] = prices2
                             st.session_state.assets = assets; put_state('assets', assets.to_dict('records'))
@@ -1414,13 +913,13 @@ if page == 'Action Plan':
     for i, a in ap_assets.iterrows():
         if a['ticker'] == 'CASH':
             rows.append({'idx': i, '전략': a['strategy'], '티커': 'CASH', 'ETF': '현금', 'role': a['role'], '종가': 1.0,
-                         'SMA10': None, 'SMA 위': '—', '12M': None, '현재금액': asset_value(a, st.session_state.get('run_fx_rate')), '목표%': a['target_pct']})
+                         'SMA10': None, 'SMA 위': '—', '12M': None, '현재금액': asset_value(a), '목표%': a['target_pct']})
             continue
         close, sma, mom = calc_prices(a)
         sma_flag = ('YES' if close > sma else 'NO') if sma is not None else '데이터부족'
         rows.append({'idx': i, '전략': a['strategy'], '티커': a['ticker'], 'ETF': a['name'], 'role': a['role'], '종가': close,
                      'SMA10': sma, 'SMA 위': sma_flag, '12M': mom,
-                     '현재금액': asset_value(a, st.session_state.get('run_fx_rate')), '목표%': a['target_pct']})
+                     '현재금액': asset_value(a), '목표%': a['target_pct']})
     vdf = pd.DataFrame(rows)
 
     QUARTER_END = run_date.month in (3, 6, 9, 12)
@@ -1459,14 +958,14 @@ if page == 'Action Plan':
         cash_tgt = total * (0.2 if winner is not None else 1.0)
         plan_rows.append({'전략': 'GSM', '티커': 'CASH', 'ETF': '현금', '현재금액': cash_cur, '목표금액': cash_tgt, '매매액(+매수/-매도)': cash_tgt - cash_cur, '비고': '전략 대기현금' if winner is not None else '전 후보 SMA 이탈'})
 
-    # ---- ISA: QQQ 고점대비 -10% → 레버리지(418660) 분할매수 ----
+    # ---- ISA: 나스닥100(신호) 고점대비 -10% → 레버리지(418660) 분할매수 ----
     isa_all = vdf[vdf['전략'] == 'ISA'] if not vdf.empty else vdf
     if not isa_all.empty:
         isa = isa_all[isa_all['티커'] != 'CASH']; cash_row = isa_all[isa_all['티커'] == 'CASH']
         if not isa.empty:
             r = isa.iloc[0]; dd = trigger_dd.get('ISA'); triggered = dd is not None and dd <= -0.10
             cash = n(cash_row['현재금액'].sum()); buy = cash / 2 if triggered else 0.0
-            note = f'트리거 발동(QQQ 고점대비 {p(dd)}) → 현금 절반 분할매수' if triggered else f'대기(QQQ 고점대비 {p(dd) if dd is not None else "데이터 없음"})'
+            note = f'트리거 발동(신호 고점대비 {p(dd)}) → 현금 절반 분할매수' if triggered else f'대기(신호 고점대비 {p(dd) if dd is not None else "데이터 없음"})'
             plan_rows.append({'전략': 'ISA', '티커': r['티커'], 'ETF': r['ETF'], '현재금액': r['현재금액'], '목표금액': r['현재금액'] + buy, '매매액(+매수/-매도)': buy, '비고': note})
             plan_rows.append({'전략': 'ISA', '티커': 'CASH', 'ETF': '현금', '현재금액': cash, '목표금액': cash - buy, '매매액(+매수/-매도)': -buy, '비고': '매수 재원'})
 
@@ -1522,63 +1021,7 @@ if page == 'Action Plan':
         for strat in order:
             g = merged_df[merged_df['전략'] == strat]
             if g.empty: continue
-            cfg = next((c for c in cfgs if c['code'] == strat), {})
-            account_name = cfg.get('account', strat)
-            status_label, status_help = strategy_rebalance_status(g)
-            st.markdown(f'#### {strat} · {account_name}')
-            st.caption(f'{status_label}  ·  {status_help}')
-
-            if MOBILE:
-                total_cur = g['현재금액'].sum()
-                total_tgt = g['목표금액'].sum()
-                total_trade = g['매매액'].sum()
-                buys = g[g['매매액'] > 1000]
-                sells = g[g['매매액'] < -1000]
-
-                sc1, sc2, sc3 = st.columns(3)
-                sc1.metric('현재', w(total_cur))
-                sc2.metric('목표', w(total_tgt))
-                sc3.metric('순매매', w(total_trade))
-
-                for _, r in g.iterrows():
-                    trade = float(r['매매액'])
-                    if trade > 1000:
-                        action = f'🛒 매수 +{w(trade)}'
-                        tone = 'neg'
-                    elif trade < -1000:
-                        action = f'💰 매도 {w(-trade)}'
-                        tone = 'pos'
-                    else:
-                        action = '⏸ 유지'
-                        tone = None
-
-                    cur = float(r['현재금액'])
-                    tgt = float(r['목표금액'])
-                    gap = float(r['목표금액'] - r['현재금액'])
-                    pct = (cur / total_cur * 100) if total_cur > 0 else 0
-                    target_pct = (tgt / total_tgt * 100) if total_tgt > 0 else 0
-
-                    mobile_card(
-                        f"{r['ETF']} · {r['티커']}",
-                        [
-                            f"<b>{action}</b> · {r['비고']}",
-                            f"현재 {w(cur)} ({pct:.1f}%) → 목표 {w(tgt)} ({target_pct:.1f}%)",
-                            f"필요 조정 {w(gap) if gap >= 0 else '-' + w(-gap)} · 종가 {num0(r['종가'])}",
-                            f"SMA10 {num0(r['SMA10']) if r['SMA10'] != '데이터부족' else '데이터 부족'} · 12M {r['12M']}",
-                        ],
-                        tone=tone
-                    )
-
-                if not buys.empty or not sells.empty:
-                    parts = []
-                    if not buys.empty:
-                        parts.append('매수 ' + ', '.join(f"{x['ETF']} {w(x['매매액'])}" for _, x in buys.iterrows()))
-                    if not sells.empty:
-                        parts.append('매도 ' + ', '.join(f"{x['ETF']} {w(-x['매매액'])}" for _, x in sells.iterrows()))
-                    st.info(' · '.join(parts))
-                st.divider()
-                continue
-
+            st.markdown(f'#### {strat}')
             show = g.copy()
             show['SMA10'] = show['SMA10'].apply(lambda x: num0(x) if x is not None else '데이터부족')
             show['SMA 위'] = show['SMA 위'].fillna('—')
@@ -1621,104 +1064,19 @@ if page == 'Action Plan':
                         with ec1:
                             done = st.checkbox(f"{r['ETF']} 실행완료", value=bool(prev.get('done', False)), key=f"exec_done_{r['전략']}_{r['티커']}")
                         with ec2:
-                            actual = st.number_input(
-                            f"{r['ETF']} 실제 체결금액",
-                            value=n(prev.get('actual', r['매매액'])),
-                            step=1000.0,
-                            key=f"exec_actual_{r['전략']}_{r['티커']}"
-                        )
-                        planned_shares = n(prev.get('planned_shares', 0))
-                        actual_shares = st.number_input(
-                            f"{r['ETF']} 실제 체결 주수",
-                            value=planned_shares if prev.get('actual_shares') is None else n(prev.get('actual_shares', 0)),
-                            min_value=0.0,
-                            step=1.0,
-                            key=f"exec_shares_{r['전략']}_{r['티커']}",
-                            help="실제 주문 체결 수량을 입력합니다. 소수점 거래가 가능한 상품은 0.1주 단위 등으로 직접 입력할 수 있습니다."
-                        )
-                        exec_inputs[key] = {
-                            'ETF': r['ETF'],
-                            'planned': float(r['매매액']),
-                            'done': done,
-                            'actual': actual,
-                            'planned_shares': planned_shares,
-                            'actual_shares': actual_shares
-                        }
+                            actual = st.number_input(f"{r['ETF']} 실제 체결금액", value=n(prev.get('actual', r['매매액'])), step=1000.0, key=f"exec_actual_{r['전략']}_{r['티커']}")
+                        exec_inputs[key] = {'ETF': r['ETF'], 'planned': float(r['매매액']), 'done': done, 'actual': actual}
                 if st.form_submit_button('체크리스트 저장'):
                     all_exec = [x for x in get_state('executions') if (x.get('date'), x.get('strategy'), x.get('ticker')) not in exec_inputs]
                     for (d, strat, t), v in exec_inputs.items():
-                        all_exec.append({
-                            'date': d,
-                            'strategy': strat,
-                            'ticker': t,
-                            'ETF': v['ETF'],
-                            'planned': v['planned'],
-                            'done': v['done'],
-                            'actual': v['actual'],
-                            'planned_shares': v.get('planned_shares', 0),
-                            'actual_shares': v.get('actual_shares', 0),
-                        })
+                        all_exec.append({'date': d, 'strategy': strat, 'ticker': t, 'ETF': v['ETF'], 'planned': v['planned'], 'done': v['done'], 'actual': v['actual']})
                     put_state('executions', all_exec)
                     st.success('체크리스트를 저장했습니다.')
-
-    # ───────────────────────────────────────────────────────────────────────
-    # 리밸런싱 실행 전 최종 점검
-    # ───────────────────────────────────────────────────────────────────────
-    with st.expander('🛡️ 리밸런싱 실행 전 최종 점검', expanded=False):
-        review_errors = []
-        review_warnings = []
-
-        if plan_df.empty:
-            review_errors.append('리밸런싱 계획이 없습니다.')
-        else:
-            for strat in order:
-                sg = plan_df[plan_df['전략'] == strat]
-                if sg.empty:
-                    continue
-                status, _ = strategy_rebalance_status(sg)
-                if status == '⚠️ 데이터 확인':
-                    review_warnings.append(f'{strat}: 가격/SMA 데이터 확인 필요')
-
-            # 목표비중 합계 점검
-            for strat in order:
-                sg = plan_df[(plan_df['전략'] == strat) & (plan_df['티커'] != 'CASH')]
-                if sg.empty:
-                    continue
-                # 현재/목표 금액이 존재하는지 확인
-                if sg['목표금액'].isna().any():
-                    review_errors.append(f'{strat}: 목표금액 계산 오류')
-
-        exec_map = {(x.get('date'), x.get('strategy'), x.get('ticker')): x
-                    for x in get_state('executions')
-                    if x.get('date') == run_date.isoformat()}
-        pending = 0
-        for _, r in action_rows.iterrows():
-            key = (run_date.isoformat(), r['전략'], r['티커'])
-            rec = exec_map.get(key, {})
-            if not rec.get('done', False):
-                pending += 1
-
-        if review_errors:
-            for msg in review_errors:
-                st.error(msg)
-        else:
-            st.success('계산 및 계획 데이터 점검 완료')
-
-        if review_warnings:
-            for msg in review_warnings:
-                st.warning(msg)
-
-        if pending:
-            st.info(f'실행 체크리스트 미완료 항목: {pending}건')
-        else:
-            st.success('실행 체크리스트가 모두 완료되었습니다.')
-
-        st.caption('이 점검은 주문을 실행하지 않습니다. 실제 체결 후에는 아래 실행 체크리스트에 체결 금액과 체결 주수를 기록하세요.')
 
     if st.button('Action Plan + 전체 스냅샷을 히스토리에 저장'):
         plan_text = ' | '.join(f"{r['전략']} {r['ETF']}: {w(r['매매액(+매수/-매도)'])} ({r['비고']})" for _, r in plan_df.iterrows() if abs(r['매매액(+매수/-매도)']) > 1000) if not plan_df.empty else ''
         save_history_snapshot(assets, run_date, plan_text=plan_text)
-        st.success('저장했습니다.'); toast('히스토리에 저장했습니다.')
+        st.success('저장했습니다.')
 
 elif page == '포트폴리오 대시보드':
     st.subheader('포트폴리오 대시보드'); st.caption('전략(계좌)별 목표비중 대비 현재비중과, 전체 전략의 자산분류별 분포를 한눈에 봅니다 · Snowball72 스타일 참고')
@@ -1734,14 +1092,16 @@ elif page == '포트폴리오 대시보드':
             st.markdown(f"#### {code} · {cfg.get('account', code)}{badge} — {w(strat_total)}")
             if MOBILE:
                 for _, r in g.iterrows():
-                    render_mobile_target_weight_card(r['ETF'], r['현재비중'], r['목표비중'], r['현재금액'])
+                    st.caption(f"{r['ETF']} — {w(r['현재금액'])} (목표 {r['목표비중']:.1f}%)")
+                    st.progress(min(1.0, max(0.0, r['현재비중'] / 100)), text=f"{r['현재비중']:.1f}%")
             else:
-                for _, r in g.iterrows():
-                    dc1, dc2 = st.columns([1.0, 3.2])
-                    with dc1:
-                        st.markdown(f"**{r['ETF']}**<br>{w(r['현재금액'])}", unsafe_allow_html=True)
-                    with dc2:
-                        render_target_weight_bar(r['현재비중'], r['목표비중'])
+                show = g[['ETF', '현재금액', '현재비중', '목표비중']].copy()
+                show['현재금액'] = show['현재금액'].map(num0)
+                st.dataframe(show, use_container_width=True, hide_index=True, column_config={
+                    '현재금액': st.column_config.TextColumn('현재금액(원)'),
+                    '현재비중': st.column_config.ProgressColumn('현재비중', format='%.1f%%', min_value=0, max_value=100),
+                    '목표비중': st.column_config.NumberColumn('목표비중(%)', format='%.1f%%'),
+                })
         st.divider(); st.markdown('#### 전략별 비중 (전체 자산 대비)')
         by_strategy = snap_df.groupby('전략')['현재금액'].sum()
         if grand_total > 0: st.bar_chart((by_strategy / grand_total * 100).rename('비중(%)'))
@@ -1907,10 +1267,6 @@ elif page == '전략 구성':
         weights_ok = abs(asset_sum - 100) <= 0.05
         if weights_ok: st.success('목표비중 합계 100% ✓ (현금 행 포함)')
         else: st.error(f'목표비중 합계 {asset_sum:.1f}% — 현금 행을 포함해 정확히 100%가 되어야 저장됩니다.')
-    if not subset.empty:
-        st.download_button('현재 전략 구성 CSV 다운로드',
-                           subset[['ticker', 'name', 'market', 'shares', 'close', 'target_pct', 'category']].to_csv(index=False),
-                           file_name=f'{chosen}-assets.csv', mime='text/csv')
 
     st.markdown('### 종목 검색·추가 (ETF + 개별주식, 한국/미국)')
     mkt_choice = st.radio('시장', ['한국(KRX)', '미국(Yahoo)'], horizontal=True, key='mkt_choice')
@@ -1991,7 +1347,7 @@ elif page == '전략 구성':
             new_cfgs = [new_cfg if c['code'] == chosen else c for c in cfgs]
             if chosen not in [c['code'] for c in cfgs]: new_cfgs.append(new_cfg)
             put_state('strategies', new_cfgs)
-            st.success('저장했습니다.'); toast('전략 구성을 저장했습니다.'); st.rerun()
+            st.success('저장했습니다.'); st.rerun()
 
     st.divider(); st.markdown('### 히스토리 저장')
     st.caption('현재 모든 전략의 구성·비중·분류를 한 번에 히스토리와 총자산 시계열에 저장합니다.')
@@ -2018,129 +1374,137 @@ elif page == '리밸런싱 히스토리':
     if not h:
         st.info('아직 저장된 히스토리가 없습니다. 전략 구성 페이지 하단 또는 Action Plan 페이지에서 저장하세요.')
     else:
-        hdf = pd.DataFrame(h).sort_values('date').reset_index(drop=True)
-        years = sorted({pd.Timestamp(x).year for x in h}, reverse=True)
-        f1, f2 = st.columns([1, 2])
-        with f1:
-            hy = st.selectbox('조회 연도', ['전체'] + years, key='hist_year_v11')
-        with f2:
-            hint = '전체 기간' if hy == '전체' else f'{hy}년 저장 기록'
-            st.caption(f'{hint} · 총 {len(hdf)}회 스냅샷')
-        view = hdf if hy == '전체' else hdf[hdf['date'].str.startswith(str(hy))].copy()
-        if view.empty:
-            st.info('선택한 조건에 저장된 히스토리가 없습니다.')
-        else:
-            last = view.iloc[-1]; prev = view.iloc[-2] if len(view) >= 2 else None
-            k1, k2, k3 = st.columns(3)
-            k1.metric('최근 총자산', w(n(last.get('total'))))
-            if prev is not None:
-                d = n(last.get('total')) - n(prev.get('total'))
-                k2.metric('직전 대비', w(abs(d)), delta=('▲ ' if d >= 0 else '▼ ') + w(abs(d)))
-            else:
-                k2.metric('저장 횟수', f'{len(view)}회')
-            k3.metric('최근 저장일', str(last['date']))
-
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(['요약', '전략', '자산군', '스냅샷', '연간 리포트'])
-            with tab1:
-                mom = compute_mom_delta()
-                if mom:
-                    st.markdown(f"#### 최근 변화 · {mom['prev_date']} → {mom['cur_date']}")
-                    arrow = '▲' if mom['total_delta'] >= 0 else '▼'
-                    st.metric('총자산', w(mom['total_cur']), delta=f'{arrow} {w(abs(mom["total_delta"]))}')
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.caption('전략별 증감'); render_diff_table(mom['by_strategy'])
-                    with c2:
-                        st.caption('분류별 증감'); render_diff_table(mom['by_category'])
-                chart_df = view[['date', 'total']].assign(date=lambda x: pd.to_datetime(x.date)).set_index('date')
-                st.line_chart(chart_df['total'])
+        hdf = pd.DataFrame(h).sort_values('date')
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(['전체', '전략별 총액', '분류별 총액', '세부 내역', '연간 리포트'])
+        with tab1:
+            mom = compute_mom_delta()
+            if mom:
+                st.markdown(f"#### 직전 저장 대비 변화 ({mom['prev_date']} → {mom['cur_date']})")
+                arrow = '▲' if mom['total_delta'] >= 0 else '▼'
+                st.metric('총자산', w(mom['total_cur']), delta=f"{arrow} {w(abs(mom['total_delta']))}")
+                dc1, dc2 = st.columns(2)
+                with dc1: st.caption('전략별 증감'); render_diff_table(mom['by_strategy'])
+                with dc2: st.caption('분류별 증감'); render_diff_table(mom['by_category'])
+                st.divider()
+            chart_df = hdf[['date', 'total']].assign(date=lambda x: pd.to_datetime(x.date)).set_index('date')
+            st.line_chart(chart_df['total'])
+            show = hdf[['date', 'total', 'plan']].copy(); show['total'] = show['total'].map(w)
+            st.dataframe(show.rename(columns={'date': '날짜', 'total': '총자산', 'plan': '액션플랜 메모'}), use_container_width=True, hide_index=True)
+        with tab2:
+            by_strat = pd.DataFrame([{**{'date': r['date']}, **(r.get('by_strategy') or {})} for _, r in hdf.iterrows()])
+            if not by_strat.empty:
+                by_strat = by_strat.set_index('date'); by_strat.index = pd.to_datetime(by_strat.index)
+                st.line_chart(by_strat.fillna(0))
+                show = by_strat.reset_index().rename(columns={'date': '날짜'})
+                for c in show.columns:
+                    if c != '날짜': show[c] = show[c].map(lambda x: w(x) if pd.notna(x) else '—')
                 if MOBILE:
-                    st.markdown('#### 최근 저장 기록')
-                    for i in range(len(view)-1, -1, -1):
-                        r = view.iloc[i]
-                        dtext = ''
-                        if i > 0:
-                            d = n(r.get('total')) - n(view.iloc[i-1].get('total'))
-                            dtext = f' · 직전 대비 {("+" if d >= 0 else "")}{w(d)}'
-                        st.markdown(f'<div class="history-card"><div class="history-date">{r["date"]} · {w(n(r.get("total")))}</div><div class="history-sub">{str(r.get("plan") or "저장된 액션플랜 메모 없음")[:100]}{dtext}</div></div>', unsafe_allow_html=True)
+                    with st.expander('전략별 총액 표로 보기'): st.dataframe(show, use_container_width=True, hide_index=True)
                 else:
-                    show = view[['date','total','plan']].copy(); show['total'] = show['total'].map(w)
-                    st.dataframe(show.rename(columns={'date':'날짜','total':'총자산','plan':'액션플랜 메모'}), use_container_width=True, hide_index=True)
+                    st.dataframe(show, use_container_width=True, hide_index=True)
+        with tab3:
+            by_cat = pd.DataFrame([{**{'date': r['date']}, **(r.get('by_category') or {})} for _, r in hdf.iterrows()])
+            if not by_cat.empty:
+                by_cat = by_cat.set_index('date'); by_cat.index = pd.to_datetime(by_cat.index)
+                st.line_chart(by_cat.fillna(0))
+                show = by_cat.reset_index().rename(columns={'date': '날짜'})
+                for c in show.columns:
+                    if c != '날짜': show[c] = show[c].map(lambda x: w(x) if pd.notna(x) else '—')
+                if MOBILE:
+                    with st.expander('분류별 총액 표로 보기'): st.dataframe(show, use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(show, use_container_width=True, hide_index=True)
+        with tab4:
+            options = [r['date'] for r in h]
+            pick = st.selectbox('세부 내역을 볼 날짜', options)
+            rec = next((r for r in h if r['date'] == pick), None)
+            if rec:
+                comp = rec.get('composition') or []
+                if comp:
+                    cdf = pd.DataFrame(comp)
+                    if MOBILE:
+                        for strat, g in cdf.groupby('전략'):
+                            st.markdown(f'##### {strat}')
+                            for _, r in g.iterrows():
+                                mobile_card(r['ETF'], [f"{r['티커']} · {r['분류']}", f"{w(r['현재금액'])} ({r['현재비중']:.1f}% / 목표 {r['목표비중']:.1f}%)"])
+                    else:
+                        show = cdf.copy(); show['현재금액'] = show['현재금액'].map(w)
+                        show['현재비중'] = show['현재비중'].map(lambda x: f'{x:.1f}%'); show['목표비중'] = show['목표비중'].map(lambda x: f'{x:.1f}%')
+                        st.dataframe(show, use_container_width=True, hide_index=True)
+                else:
+                    st.info('이 기록은 구성 스냅샷이 없습니다(이전 버전 저장분).')
+                if rec.get('plan'): st.markdown('**저장 시점 Action Plan 메모**'); st.write(rec['plan'])
+                exec_recs = [x for x in get_state('executions') if x.get('date') == rec['date']]
+                if exec_recs:
+                    st.markdown('**계획 대비 실제 실행**')
+                    edf = pd.DataFrame(exec_recs)
+                    edf['차이'] = edf['actual'] - edf['planned']
+                    edf['실행'] = edf['done'].map(lambda x: '✅' if x else '⬜')
+                    for c in ['planned', 'actual', '차이']: edf[c] = edf[c].map(w)
+                    st.dataframe(edf[['strategy', 'ETF', '실행', 'planned', 'actual', '차이']].rename(
+                        columns={'strategy': '전략', 'planned': '계획', 'actual': '실제'}), use_container_width=True, hide_index=True)
+                row, leftover = build_category_row(rec['date'], rec.get('by_category') or {})
+                st.markdown('**구글 스프레드시트 붙여넣기용 한 줄**')
+                st.code(row, language=None)
+                if leftover:
+                    st.caption('행에 포함되지 않은 분류: ' + ', '.join(f'{k} {w(v)}' for k, v in leftover.items()))
+        with tab5:
+            st.markdown('#### 연간 결산 리포트')
+            years_avail = sorted({pd.Timestamp(r['date']).year for r in h}, reverse=True)
+            if not years_avail:
+                st.info('히스토리가 없습니다.')
+            else:
+                ry = st.selectbox('연도 선택', years_avail, key='report_year')
+                year_recs = sorted([r for r in h if pd.Timestamp(r['date']).year == ry], key=lambda x: x['date'])
+                if len(year_recs) < 1:
+                    st.info('해당 연도의 저장 기록이 없습니다.')
+                else:
+                    first_rec = year_recs[0]; last_rec = year_recs[-1]
+                    st.caption(f"{first_rec['date']} → {last_rec['date']} ({len(year_recs)}회 저장)")
+                    total_start = n(first_rec.get('total')); total_end = n(last_rec.get('total')); delta = total_end - total_start
+                    rc1, rc2, rc3 = st.columns(3)
+                    rc1.metric('연초 총자산', w(total_start)); rc2.metric('연말 총자산', w(total_end), delta=w(delta))
+                    equity_year = [{'date': r['date'], 'value': n(r.get('total'))} for r in year_recs]
+                    mm = portfolio_perf(equity_year)
+                    rc3.metric('기간 중 MDD', p(mm[1]) if mm else '—')
 
-            with tab2:
-                by_strat = pd.DataFrame([{**{'date':r['date']}, **(r.get('by_strategy') or {})} for _, r in view.iterrows()])
-                if not by_strat.empty:
-                    by_strat = by_strat.set_index('date'); by_strat.index = pd.to_datetime(by_strat.index); filled = by_strat.fillna(0)
-                    selected = st.multiselect('전략 선택', list(filled.columns), default=list(filled.columns)[:min(3,len(filled.columns))], key='hist_strategy_pick_v11')
-                    if selected:
-                        st.line_chart(filled[selected])
-                        rows=[]
-                        for name in selected:
-                            vals=filled[name].tolist(); startv=n(vals[0]); endv=n(vals[-1])
-                            rows.append({'전략':name,'최근':endv,'기간증감':endv-startv,'기간수익률':(endv/startv-1) if startv>0 else None})
-                        sdf=pd.DataFrame(rows)
-                        if MOBILE:
-                            for _,r in sdf.iterrows():
-                                mobile_card(r['전략'], [f'최근 {w(r["최근"])}', f'기간 {w(r["기간증감"])} · {p(r["기간수익률"]) if pd.notna(r["기간수익률"]) else "—"}'], tone='pos' if r['기간증감']>=0 else 'neg')
-                        else:
-                            sdf['최근']=sdf['최근'].map(w); sdf['기간증감']=sdf['기간증감'].map(w); sdf['기간수익률']=sdf['기간수익률'].map(lambda x:p(x) if pd.notna(x) else '—')
-                            st.dataframe(sdf,use_container_width=True,hide_index=True)
+                    cf_year = [c for c in get_state('cashflows') if pd.Timestamp(c['date']).year == ry]
+                    irr_year = calc_xirr(equity_year, cf_year) if cf_year else None
+                    st.metric('연간 IRR', p(irr_year) if irr_year is not None else '(해당 연도 입출금 기록 없음)')
+                    if total_start > 0:
+                        st.caption(f'내 포트폴리오 기간수익률(단순, 입출금 미반영): {p(total_end / total_start - 1)}')
 
-            with tab3:
-                by_cat = pd.DataFrame([{**{'date':r['date']}, **(r.get('by_category') or {})} for _, r in view.iterrows()])
-                if not by_cat.empty:
-                    by_cat=by_cat.set_index('date'); by_cat.index=pd.to_datetime(by_cat.index)
-                    selected=st.multiselect('자산군 선택',list(by_cat.columns),default=list(by_cat.columns)[:min(4,len(by_cat.columns))],key='hist_cat_pick_v11')
-                    if selected: st.line_chart(by_cat[selected].fillna(0))
-                    show=by_cat[selected].reset_index() if selected else by_cat.reset_index()
-                    for c in show.columns:
-                        if c!='date': show[c]=show[c].map(lambda x:w(x) if pd.notna(x) else '—')
-                    st.dataframe(show.rename(columns={'date':'날짜'}),use_container_width=True,hide_index=True)
+                    st.markdown('##### 전략별 연초 → 연말')
+                    strat_rows = []
+                    for strat_code in sorted(set((first_rec.get('by_strategy') or {}).keys()) | set((last_rec.get('by_strategy') or {}).keys())):
+                        s0 = n((first_rec.get('by_strategy') or {}).get(strat_code, 0)); s1 = n((last_rec.get('by_strategy') or {}).get(strat_code, 0))
+                        strat_rows.append({'전략': strat_code, '연초': w(s0), '연말': w(s1), '증감': w(s1 - s0)})
+                    if strat_rows: st.dataframe(pd.DataFrame(strat_rows), use_container_width=True, hide_index=True)
 
-            with tab4:
-                pick = st.selectbox('확인할 저장일', list(reversed(view['date'].tolist())), key='history_detail_date_v11')
-                rec = next((r for r in h if r['date']==pick), None)
-                if rec:
-                    c1,c2,c3=st.columns(3); c1.metric('총자산',w(n(rec.get('total')))); c2.metric('전략 수',f'{len(rec.get("by_strategy") or {})}개'); c3.metric('저장일',rec['date'])
-                    comp=rec.get('composition') or []
-                    if comp:
-                        cdf=pd.DataFrame(comp)
-                        if MOBILE:
-                            for strat,g in cdf.groupby('전략'):
-                                st.markdown(f'#### {strat}')
-                                for _,r in g.iterrows():
-                                    render_mobile_target_weight_card(r['ETF'],r['현재비중'],r['목표비중'],r['현재금액'])
-                        else:
-                            show=cdf.copy(); show['현재금액']=show['현재금액'].map(w); show['현재비중']=show['현재비중'].map(lambda x:f'{x:.1f}%'); show['목표비중']=show['목표비중'].map(lambda x:f'{x:.1f}%'); st.dataframe(show,use_container_width=True,hide_index=True)
-                    if rec.get('plan'): st.markdown('#### 저장 당시 Action Plan'); st.info(rec['plan'])
-                    exec_recs=[x for x in get_state('executions') if x.get('date')==rec['date']]
-                    if exec_recs:
-                        st.markdown('#### 계획 대비 실제 실행'); edf=pd.DataFrame(exec_recs); edf['차이']=edf['actual']-edf['planned']; edf['실행']=edf['done'].map(lambda x:'체결' if x else '미체결')
-                        for c in ['planned','actual','차이']: edf[c]=edf[c].map(w)
-                        st.dataframe(edf[['strategy','ETF','실행','planned','actual','차이']].rename(columns={'strategy':'전략','planned':'계획','actual':'실제'}),use_container_width=True,hide_index=True)
-                    row,leftover=build_category_row(rec['date'],rec.get('by_category') or {}); st.markdown('#### 스프레드시트용 한 줄'); st.code(row,language=None)
-                    if leftover: st.caption('행에 포함되지 않은 분류: '+', '.join(f'{k} {w(v)}' for k,v in leftover.items()))
+                    st.markdown('##### 분류별 연초 → 연말')
+                    cat_rows = []
+                    for cat in sorted(set((first_rec.get('by_category') or {}).keys()) | set((last_rec.get('by_category') or {}).keys())):
+                        c0 = n((first_rec.get('by_category') or {}).get(cat, 0)); c1v = n((last_rec.get('by_category') or {}).get(cat, 0))
+                        cat_rows.append({'분류': cat, '연초': w(c0), '연말': w(c1v), '증감': w(c1v - c0)})
+                    if cat_rows: st.dataframe(pd.DataFrame(cat_rows), use_container_width=True, hide_index=True)
 
-            with tab5:
-                years_avail=sorted({pd.Timestamp(r['date']).year for r in h},reverse=True)
-                ry=st.selectbox('연도 선택',years_avail,key='report_year_v11')
-                year_recs=sorted([r for r in h if pd.Timestamp(r['date']).year==ry],key=lambda x:x['date'])
-                if year_recs:
-                    first_rec,last_rec=year_recs[0],year_recs[-1]; total_start=n(first_rec.get('total')); total_end=n(last_rec.get('total')); delta=total_end-total_start
-                    c1,c2,c3=st.columns(3); c1.metric('시작',w(total_start)); c2.metric('종료',w(total_end),delta=w(delta)); mm=portfolio_perf([{'date':r['date'],'value':n(r.get('total'))} for r in year_recs]); c3.metric('기간 MDD',p(mm[1]) if mm else '—')
-                    st.line_chart(pd.DataFrame([{'date':r['date'],'value':n(r.get('total'))} for r in year_recs]).assign(date=lambda x:pd.to_datetime(x.date)).set_index('date')['value'])
-                    rows=[]
-                    for code in sorted(set((first_rec.get('by_strategy') or {}).keys()) | set((last_rec.get('by_strategy') or {}).keys())):
-                        s0=n((first_rec.get('by_strategy') or {}).get(code,0)); s1=n((last_rec.get('by_strategy') or {}).get(code,0)); rows.append({'전략':code,'연초':w(s0),'연말':w(s1),'증감':w(s1-s0)})
-                    if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-
+                    bmk = get_state('benchmarks')
+                    bmk_rows = []
+                    for name in ['QQQ', 'SPY', 'KOSPI200']:
+                        pts = sorted([b for b in bmk if b['name'] == name and first_rec['date'] <= b['date'] <= last_rec['date']], key=lambda x: x['date'])
+                        if len(pts) >= 2:
+                            bmk_rows.append({'벤치마크': name, '기간수익률': p(pts[-1]['value'] / pts[0]['value'] - 1)})
+                    if bmk_rows:
+                        st.markdown('##### 벤치마크 대비 (같은 기간)')
+                        st.dataframe(pd.DataFrame(bmk_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption('벤치마크 데이터가 없습니다. 성과 비교 페이지에서 "벤치마크 자동 채우기"를 먼저 실행해보세요.')
     st.divider()
     st.markdown('### 백업 · 복원')
     st.caption(f'현재 DB 파일 위치: `{DB_PATH}` — app.py를 다른 폴더로 옮겨도 이 경로는 바뀌지 않습니다.')
     st.info('⚠️ **app.py를 업데이트(코드 교체·재배포)하기 전에는 항상 먼저 "JSON 백업 다운로드"를 눌러 파일을 저장해두세요.** 업데이트 후 데이터가 비어 있으면 "JSON 백업 파일로 복원"으로 그대로 되살릴 수 있습니다.')
     bc1, bc2 = st.columns(2)
     with bc1:
-        st.caption('JSON 백업에는 보유수량·전략 구성 등은 저장하지만 종가(close)와 가격이력(prices)은 저장하지 않습니다.')
         st.download_button('JSON 백업 다운로드', json.dumps(export_backup_dict(), ensure_ascii=False, indent=2, default=str), file_name=f'portfolio-backup-{date.today().isoformat()}.json', mime='application/json')
         if h:
             st.download_button('CSV 히스토리(요약)', pd.DataFrame(h).drop(columns=['composition', 'by_strategy', 'by_category'], errors='ignore').to_csv(index=False), file_name='rebalance-history.csv', mime='text/csv')
@@ -2149,71 +1513,35 @@ elif page == '리밸런싱 히스토리':
         if auto_files:
             st.caption(f'매달 스냅샷 저장 시 자동으로도 백업됩니다 (최근 {len(auto_files)}개 보관 중, 최신: {auto_files[-1].name}). 이 파일은 앱이 로컬에서 계속 실행되는 동안만 남아있습니다.')
     with bc2:
-        st.markdown('**JSON 백업 복원**')
-        st.caption('복원 시 JSON 안에 close/prices가 있더라도 무시하며, 가격은 선택한 기준일에 새로 조회합니다.')
-        st.caption('파일 선택이 브라우저에서 오류가 날 경우 아래의 JSON 직접 붙여넣기를 사용해도 됩니다.')
-        restore_mode = st.radio('복원 방식', ['JSON 직접 붙여넣기', '파일 선택'], horizontal=True, key='restore_mode')
-        restore_text = ''
-        if restore_mode == '파일 선택':
-            up = st.file_uploader('JSON 백업 파일 선택', type=['json'], key='restore_upload', help='Streamlit 파일 선택기가 정상적으로 로드되는 경우 사용합니다.')
-            if up is not None:
-                try:
-                    restore_text = up.getvalue().decode('utf-8-sig')
-                except Exception as e:
-                    st.error(f'파일을 읽지 못했습니다: {e}')
-        else:
-            restore_text = st.text_area('JSON 내용 붙여넣기', height=180, key='restore_json_text', placeholder='{\n  "assets": [...],\n  "strategies": [...]\n}')
-
-        if restore_text.strip():
+        up = st.file_uploader('JSON 백업 파일로 복원', type=['json'], key='restore_upload')
+        if up is not None:
             st.warning('복원하면 현재 저장된 데이터를 덮어씁니다.')
             if st.button('이 백업으로 복원', type='primary', key='restore_btn'):
                 try:
-                    data = json.loads(restore_text.lstrip('\ufeff'))
-                    if not isinstance(data, dict):
-                        raise ValueError('JSON 최상위 구조가 객체(dict)가 아닙니다.')
+                    data = json.loads(up.getvalue().decode('utf-8'))
                     restored, skipped = [], []
                     for k in ALL_KV_KEYS:
                         if k in data:
-                            value = data[k]
-                            if k in ('assets','history','equity','cashflows','benchmarks','strategies','category_targets','executions') and not isinstance(value, (list, dict)):
-                                raise ValueError(f'{k} 항목의 형식이 올바르지 않습니다.')
-                            if k == 'assets':
-                                # v8부터는 새 백업뿐 아니라 과거 백업을 복원할 때도
-                                # stale close/prices를 가져오지 않는다. 가격은 선택일에 다시 조회한다.
-                                value = strip_asset_price_data(value)
-                            put_state(k, value); restored.append(k)
+                            put_state(k, data[k]); restored.append(k)
                         else:
                             skipped.append(k)
                     st.session_state.pop('assets', None)
-                    a_count = len(data.get('assets', [])) if isinstance(data.get('assets', []), list) else 0
-                    s_count = len(data.get('strategies', [])) if isinstance(data.get('strategies', []), list) else 0
-                    h_count = len(data.get('history', [])) if isinstance(data.get('history', []), list) else 0
+                    a_count = len(data.get('assets', [])); s_count = len(data.get('strategies', [])); h_count = len(data.get('history', []))
                     st.success(f'복원했습니다 — 전략 {s_count}개, 종목 {a_count}개, 히스토리 {h_count}건.')
-                    toast('백업에서 복원했습니다.')
                     if skipped: st.caption(f'백업 파일에 없어 건너뛴 항목: {", ".join(skipped)} (이전 버전 백업이면 정상입니다)')
                     st.rerun()
-                except json.JSONDecodeError as e:
-                    st.error(f'JSON 형식이 올바르지 않습니다: {e}')
                 except Exception as e:
                     st.error(f'복원 실패: {e}')
 
     st.divider()
-    st.markdown('### 가격 캐시', help=PRICE_DATA_HELP)
+    st.markdown('### 가격 캐시')
     init_db(); _con = sqlite3.connect(DB_PATH)
     _n_cached = _con.execute('SELECT COUNT(*) FROM price_cache').fetchone()[0]
     _n_tickers = _con.execute('SELECT COUNT(DISTINCT ticker) FROM price_cache').fetchone()[0]
     _con.close()
     st.caption(f'캐시된 가격 데이터: 종목 {_n_tickers}개 · {_n_cached:,}개 날짜. 지나간 달/과거 거래일은 캐시에서 재사용하고, 새로 생긴 날짜만 조회합니다.')
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        if st.button('🗑️ 가격 캐시 전체 삭제', use_container_width=True):
-            cache_clear_prices()
-            st.success('SQLite 가격 캐시와 Yahoo 런타임 캐시를 함께 삭제했습니다.')
-    with cc2:
-        if st.button('♻️ 가격 조회 캐시만 초기화', use_container_width=True):
-            clear_all_price_caches()
-            st.success('Streamlit 가격 조회 캐시를 초기화했습니다. DB의 과거 가격은 유지됩니다.')
-    st.caption('권장 순서: 값이 의심되면 "가격 조회 캐시만 초기화" → 강제 새로고침. 그래도 이상하면 "가격 캐시 전체 삭제" 후 다시 조회.')
+    if st.button('가격 캐시 전체 삭제(다음 조회부터 처음부터 다시 받음)'):
+        cache_clear_prices(); st.success('캐시를 삭제했습니다.')
 
 else:  # 성과 비교
     st.subheader('성과 비교')
@@ -2256,8 +1584,7 @@ else:  # 성과 비교
         for name, vals in series.items():
             mm = portfolio_perf(vals); st.write(f'**{name}** — CAGR {p(mm[0]) if mm else "—"} · MDD {p(mm[1]) if mm else "—"}')
 
-    st.divider(); st.subheader('전략별 성과 비교')
-    st.caption('전략을 같은 시작점(100)으로 정규화해 비교합니다. 아래에서 전략과 벤치마크를 선택하세요.')
+    st.divider(); st.subheader('전략별 벤치마크 비교')
     h_hist = get_state('history')
     by_strat_series = {}
     for rec in sorted(h_hist, key=lambda x: x['date']):
@@ -2265,7 +1592,7 @@ else:  # 성과 비교
             by_strat_series.setdefault(strat, []).append({'date': rec['date'], 'value': val})
     if by_strat_series:
         avail_strats = sorted(by_strat_series.keys())
-        picked_strats = st.multiselect('비교할 전략', avail_strats, default=avail_strats[:min(3, len(avail_strats))], key='perf_strategy_pick_v11')
+        picked_strats = st.multiselect('비교할 전략 선택', avail_strats, default=avail_strats[:2])
         if picked_strats:
             strat_series = {}
             for strat in picked_strats:
@@ -2296,17 +1623,9 @@ else:  # 성과 비교
     if st.button('입출금 저장'):
         x = get_state('cashflows')
         x.append({'date': cd.isoformat(), 'amount': ca, 'memo': cm, 'strategy': '' if cstrat == '(지정 안 함)' else cstrat})
-        put_state('cashflows', x); st.success('저장했습니다.'); toast('입출금을 저장했습니다.')
+        put_state('cashflows', x); st.success('저장했습니다.')
     cf_df = pd.DataFrame(get_state('cashflows'))
     if not cf_df.empty:
         if 'strategy' not in cf_df: cf_df['strategy'] = ''
         cf_df['amount'] = cf_df['amount'].map(w)
     st.dataframe(cf_df, use_container_width=True, hide_index=True)
-    _cf_list = get_state('cashflows')
-    if _cf_list:
-        _cf_opts = [f"{i}: {x['date']} {w(x['amount'])} {str(x.get('memo', ''))}".strip() for i, x in enumerate(_cf_list)]
-        _cf_del = st.selectbox('삭제할 입출금 기록', _cf_opts, key='cf_del')
-        if st.button('선택 기록 삭제', key='cf_del_btn'):
-            _cf_list.pop(int(_cf_del.split(':', 1)[0]))
-            put_state('cashflows', _cf_list)
-            st.success('삭제했습니다.'); st.rerun()
